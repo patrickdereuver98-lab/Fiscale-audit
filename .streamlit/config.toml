@@ -1,0 +1,44 @@
+# Streamlit Configuration for FiscAudit AI
+# ============================================================================
+
+[theme]
+# Kleuren voor de moderne fiscale theme
+primaryColor = "#2563EB"      # Royal Blue - Primary Actions
+backgroundColor = "#FFFFFF"    # Wit - Clean background
+secondaryBackgroundColor = "#F1F5F9"  # Slate-100 - Card backgrounds
+textColor = "#1E293B"          # Slate-900 - Text
+font = "sans serif"
+
+[client]
+# UI/UX instellingen
+showErrorDetails = true
+logger.level = "info"
+logger.messageFormat = "%(asctime)s | %(levelname)s | %(message)s"
+runOnSave = true
+fileWatcherType = "poll"
+toolbarMode = "minimal"
+
+[server]
+# Server performance & security
+port = 8501
+headless = true
+runOnSave = true
+maxUploadSize = 200  # MB - Voor meerdere PDF's tegelijk
+enableXsrfProtection = true
+enableCORS = false
+
+[logger]
+level = "info"
+messageFormat = "%(asctime)s [%(levelname)s] %(message)s"
+
+[deprecation]
+showPyplotGlobalUse = false
+showfileUploaderEncoding = false
+
+[browser]
+gatherUsageStats = false
+serverAddress = "localhost"
+
+[mapbox]
+# Mapbox token (optional, voor toekomstige geo-features)
+token = ""
