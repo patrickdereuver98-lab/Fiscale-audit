@@ -130,14 +130,48 @@ def log_audit_action(action: str, status: str, details: str = ""):
     logger.info(f"[AUDIT] {action} | {status} | {details}")
 
 
+def get_secret(*names: str) -> Optional[str]:
+    """Look up a secret, tolerating different naming conventions.
+
+    Checks st.secrets first, then environment variables (for Docker).
+    Matching is case-insensitive, so GEMINI_API_KEY, gemini_api_key and
+    Gemini_Api_Key all resolve to the same value.
+
+    Args:
+        *names: Accepted aliases for the secret, in order of preference.
+
+    Returns:
+        The first non-empty value found, or None.
+    """
+    try:
+        secrets_lower = {str(k).lower(): v for k, v in st.secrets.items()}
+    except Exception:
+        secrets_lower = {}
+
+    env_lower = {k.lower(): v for k, v in os.environ.items()}
+
+    for name in names:
+        key = name.lower()
+        value = secrets_lower.get(key) or env_lower.get(key)
+        if value:
+            return str(value).strip()
+    return None
+
+
 def initialize_clients() -> Tuple[Optional[DocumentExtractor], Optional[AuditMatcher], 
                                   Optional[FiscalAdvisor], Optional[SupabaseClient]]:
     """Initialize all API clients with error handling."""
     try:
-        google_key = st.secrets.get("google_api_key")
-        claude_key = st.secrets.get("anthropic_api_key")
-        supabase_url = st.secrets.get("supabase_url")
-        supabase_key = st.secrets.get("supabase_key")
+        google_key = get_secret(
+            "google_api_key", "GEMINI_API_KEY", "gemini_api_key", "GOOGLE_API_KEY"
+        )
+        claude_key = get_secret(
+            "anthropic_api_key", "Claude_api_key", "claude_api_key", "ANTHROPIC_API_KEY"
+        )
+        supabase_url = get_secret("supabase_url", "SUPABASE_URL")
+        supabase_key = get_secret(
+            "supabase_key", "SUPABASE_KEY", "supabase_anon_key", "SUPABASE_ANON_KEY"
+        )
         
         # Extractor
         if not google_key:

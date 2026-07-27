@@ -1,39 +1,30 @@
 # FiscAudit AI - Streamlit Configuration
-# Complete settings for development and production deployment
+# Only valid Streamlit config options. Verified to parse as TOML.
+# Note: on Streamlit Cloud the platform controls port/headless, so those are omitted.
 
 [theme]
-# Dark theme configuration
+base = "dark"
 primaryColor = "#2563EB"
 backgroundColor = "#0F172A"
 secondaryBackgroundColor = "#1E293B"
 textColor = "#F8FAFC"
 font = "sans serif"
 
-[client]
-# Client settings
-showErrorDetails = true
-toolbarMode = "developer"
-logger.level = "info"
-
 [server]
-# Server settings
-port = 8501
-headless = true
-runOnSave = true
+# Max PDF upload size in MB
 maxUploadSize = 200
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+# Set to false once the app is stable, so stack traces are not shown to end users
+showErrorDetails = true
+toolbarMode = "minimal"
 
 [logger]
-# Logging configuration
 level = "info"
-messageFormat = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-
-[client.toolbarMode]
-# Hide/show toolbar (development vs production)
-# development = "developer"
-# production = "minimal"
-value = "developer"
 
 [runner]
-# Runner settings for async code
 magicEnabled = true
-fastReruns = true

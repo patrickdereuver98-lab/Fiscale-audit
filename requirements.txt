@@ -1,67 +1,21 @@
 # FiscAudit AI - Python Requirements
-# Production-ready for Streamlit Cloud & Traditional Deployment
-# Python 3.11+ required
+#
+# Only the packages the code actually imports. Everything else in the previous
+# version (pandas, numpy, pymupdf, PyPDF2, pdf2image, sqlalchemy, cryptography,
+# python-docx, httpx, aiohttp, requests, tenacity, ...) was unused and was the
+# main source of install failures: pymupdf and cryptography compile from source,
+# and pdf2image needs the poppler system binary that is not present on
+# Streamlit Cloud.
+#
+# PDF bytes are sent straight to Gemini as base64, so no local PDF library is
+# needed. pandas arrives transitively via streamlit.
+#
+# IMPORTANT: set the Python version to 3.11 or 3.12 in Streamlit Cloud
+# (Advanced settings when deploying). The build log showed Python 3.14, for
+# which several wheels do not yet exist.
 
-# ============================================================================
-# CORE FRAMEWORK
-# ============================================================================
-streamlit>=1.32.0,<2.0
-streamlit-option-menu>=0.3.12
-
-# ============================================================================
-# WEB & ASYNC
-# ============================================================================
-httpx>=0.25.0
-aiohttp>=3.9.0
-requests>=2.31.0
-
-# ============================================================================
-# DATA & VALIDATION
-# ============================================================================
-pydantic>=2.5.0
-pydantic-settings>=2.1.0
-pandas>=2.1.0
-numpy>=1.26.0
-
-# ============================================================================
-# DATABASE
-# ============================================================================
-supabase>=2.1.0
-python-dotenv>=1.0.0
-sqlalchemy>=2.0.0
-
-# ============================================================================
-# AI & LLM
-# ============================================================================
-google-generativeai>=0.3.0
-anthropic>=0.8.0
-
-# ============================================================================
-# PDF HANDLING
-# ============================================================================
-PyPDF2>=4.0.0
-pdf2image>=1.16.0
-pymupdf>=1.23.0
-
-# ============================================================================
-# TEXT PROCESSING
-# ============================================================================
-python-docx>=0.8.11
-
-# ============================================================================
-# SECURITY & CRYPTOGRAPHY
-# ============================================================================
-cryptography>=41.0.0
-
-# ============================================================================
-# UTILITIES
-# ============================================================================
-python-dateutil>=2.8.0
-pytz>=2023.3
-retry>=0.9.0
-tenacity>=8.2.0
-
-# ============================================================================
-# LOGGING & MONITORING
-# ============================================================================
-python-json-logger>=2.0.0
+streamlit>=1.32,<2
+google-generativeai>=0.3
+anthropic>=0.34
+supabase>=2.4
+pydantic>=2.5,<3
