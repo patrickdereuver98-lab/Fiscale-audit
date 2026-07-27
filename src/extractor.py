@@ -1,381 +1,575 @@
 """
-FiscAudit AI - Document Extractor Engine
-Gemini 1.5 Pro voor visuele PDF-extractie naar gestructureerde JSON.
-Pydantic v2 voor strikte output validation.
+FiscAudit AI - Document Extraction Engine (PRODUCTION-READY)
+
+Extracts financial data from PDF documents using Google Gemini 1.5 Pro vision model.
+Features:
+  - Strict Pydantic v2 validation (ConfigDict strict mode)
+  - Comprehensive error handling with retries
+  - Multiple JSON parsing fallbacks
+  - Audit logging for compliance
+  - Type hints throughout
 """
 
+import asyncio
 import json
 import base64
-import asyncio
-from typing import Optional, List, Dict, Any
-from dataclasses import dataclass
-from enum import Enum
+import logging
+import re
+from typing import Optional
 from datetime import datetime
 
+from pydantic import BaseModel, Field, field_validator, ConfigDict, ValidationError
 import google.generativeai as genai
-from pydantic import BaseModel, Field, ValidationError
+
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# ENUMS
-# ============================================================================
-
-class DocumentType(str, Enum):
-    """Type documenten die we kunnen extracten"""
-    WOZ_BESCHIKKING = "WOZ_Beschikking"
-    BANK_JAAROVERZICHT = "Bank_Jaaroverzicht"
-    JAARREKENING = "Jaarrekening"
-    BELASTINGOPGAAF = "Belastingopgaaf"
-    HYPOTHEEKDOCUMENT = "Hypotheekdocument"
-    BELEGGINGSAFSCHRIFT = "Beleggingsafschrift"
-    BOX3_AANGIFTE = "Box3_Aangifte"
-    OVERIG = "Overig"
-
-
-# ============================================================================
-# PYDANTIC SCHEMAS
+# PYDANTIC MODELS (STRICT VALIDATION)
 # ============================================================================
 
 class BankBalance(BaseModel):
-    """Bank saldo informatie"""
-    iban: Optional[str] = Field(None, description="IBAN (geanonimiseerd)")
-    saldo: Optional[float] = Field(None, description="Saldo in EUR")
-    rente: Optional[float] = Field(None, description="Rentetarief (%)")
-    peildatum: Optional[str] = Field(None, description="Peildatum (YYYY-MM-DD)")
+    """Bank account balance information with strict validation."""
+    
+    model_config = ConfigDict(
+        strict=True,
+        str_strip_whitespace=True,
+        json_schema_extra={
+            "example": {
+                "account_number": "NL12ABNA0123456789",
+                "bank_name": "ABN AMRO",
+                "balance_eur": 50000.0,
+                "currency": "EUR"
+            }
+        }
+    )
+    
+    account_number: str = Field(
+        ...,
+        min_length=2,
+        max_length=34,
+        description="IBAN or account number (max 34 chars)"
+    )
+    bank_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Name of the bank"
+    )
+    balance_eur: float = Field(
+        ...,
+        gt=0,
+        description="Account balance in EUR (must be positive)"
+    )
+    currency: str = Field(
+        default="EUR",
+        pattern="^[A-Z]{3}$",
+        description="ISO 4217 currency code"
+    )
+
+    @field_validator('balance_eur')
+    @classmethod
+    def validate_balance(cls, v: float) -> float:
+        """Round balance to 2 decimals and check reasonableness."""
+        if v > 1e10:  # > €10 billion is unrealistic
+            raise ValueError(f"Balance exceeds maximum reasonable value: €{v:,.2f}")
+        if v < 0.01:
+            raise ValueError("Balance must be at least €0.01")
+        return round(v, 2)
 
 
 class MortgageInfo(BaseModel):
-    """Hypotheek informatie"""
-    schuld_ausstande: Optional[float] = Field(None, description="Restschuld EUR")
-    betaalde_rente: Optional[float] = Field(None, description="Betaalde rente EUR")
-    percentage: Optional[float] = Field(None, description="Rentepercentage")
-    type_hypotheek: Optional[str] = Field(None, description="Bijv. 'Aflossingshypotheek'")
+    """Mortgage loan information with strict validation."""
+    
+    model_config = ConfigDict(
+        strict=True,
+        str_strip_whitespace=True,
+        json_schema_extra={
+            "example": {
+                "principal_eur": 300000.0,
+                "current_balance_eur": 250000.0,
+                "interest_rate_pct": 2.5,
+                "monthly_payment_eur": 1200.0,
+                "loan_type": "hypotheek"
+            }
+        }
+    )
+    
+    principal_eur: float = Field(..., gt=0, description="Original loan amount")
+    current_balance_eur: float = Field(..., ge=0, description="Current outstanding balance")
+    interest_rate_pct: float = Field(..., ge=0, le=20, description="Annual interest rate (0-20%)")
+    monthly_payment_eur: float = Field(..., gt=0, description="Monthly payment amount")
+    loan_type: str = Field(default="hypotheek", description="Type of loan (hypotheek, persoonlijk, etc.)")
+
+    @field_validator('current_balance_eur')
+    @classmethod
+    def validate_balance_vs_principal(cls, v: float, info) -> float:
+        """Validate current balance doesn't exceed principal (with 10% tolerance)."""
+        data = info.data
+        if 'principal_eur' in data:
+            max_allowed = data['principal_eur'] * 1.1
+            if v > max_allowed:
+                raise ValueError(
+                    f"Current balance (€{v:,.2f}) exceeds principal "
+                    f"(€{data['principal_eur']:,.2f})"
+                )
+        return round(v, 2)
 
 
 class BusinessIncome(BaseModel):
-    """Bedrijfsinkomen informatie"""
-    bruto_omzet: Optional[float] = Field(None, description="Bruto omzet EUR")
-    kosten_totaal: Optional[float] = Field(None, description="Totale bedrijfskosten EUR")
-    winst: Optional[float] = Field(None, description="Netto bedrijfswinst EUR")
-    type_onderneming: Optional[str] = Field(None, description="Bijv. 'Eenmanszaak', 'VOF'")
+    """Business/self-employment income information."""
+    
+    model_config = ConfigDict(
+        strict=True,
+        str_strip_whitespace=True,
+        json_schema_extra={
+            "example": {
+                "gross_income_eur": 150000.0,
+                "deductible_expenses_eur": 50000.0,
+                "net_profit_eur": 100000.0
+            }
+        }
+    )
+    
+    gross_income_eur: float = Field(..., gt=0, description="Total business income")
+    deductible_expenses_eur: float = Field(..., ge=0, description="Deductible business expenses")
+    net_profit_eur: float = Field(..., description="Net profit after deductions")
+
+    @field_validator('net_profit_eur')
+    @classmethod
+    def validate_net_profit(cls, v: float, info) -> float:
+        """Validate net profit approximately equals gross - deductions."""
+        data = info.data
+        if 'gross_income_eur' in data and 'deductible_expenses_eur' in data:
+            expected = data['gross_income_eur'] - data['deductible_expenses_eur']
+            tolerance = expected * 0.02  # 2% tolerance for rounding
+            difference = abs(v - expected)
+            
+            if difference > tolerance:
+                logger.warning(
+                    f"Net profit mismatch: actual €{v:,.2f}, "
+                    f"expected €{expected:,.2f} (diff: €{difference:,.2f})"
+                )
+        return round(v, 2)
 
 
 class PropertyInfo(BaseModel):
-    """Vastgoed/WOZ informatie"""
-    woz_waarde: Optional[float] = Field(None, description="WOZ-waarde EUR")
-    adres: Optional[str] = Field(None, description="Adres (geanonimiseerd)")
-    eigenaar_percentage: Optional[float] = Field(None, description="Eigendomspercentage")
-    type_woning: Optional[str] = Field(None, description="Bijv. 'Appartementsrecht'")
+    """Real estate property information."""
+    
+    model_config = ConfigDict(
+        strict=True,
+        str_strip_whitespace=True,
+        json_schema_extra={
+            "example": {
+                "address": "Straat 1, Amsterdam, Netherlands",
+                "woz_value_eur": 500000.0,
+                "year_valued": 2024,
+                "ownership_pct": 100.0
+            }
+        }
+    )
+    
+    address: str = Field(..., min_length=5, description="Property address (street, city)")
+    woz_value_eur: float = Field(..., gt=0, description="WOZ valuation in EUR")
+    year_valued: int = Field(
+        ...,
+        ge=2000,
+        le=datetime.now().year,
+        description="Year of WOZ valuation"
+    )
+    ownership_pct: float = Field(
+        default=100.0,
+        ge=1,
+        le=100,
+        description="Ownership percentage (1-100%)"
+    )
+
+    @field_validator('woz_value_eur')
+    @classmethod
+    def validate_woz_value(cls, v: float) -> float:
+        """Validate WOZ is realistic for Netherlands."""
+        if v > 1e7:  # > €10 million is unrealistic for NL
+            raise ValueError(f"WOZ value exceeds reasonable maximum: €{v:,.0f}")
+        return round(v, 0)
 
 
 class ExtractedFinancialData(BaseModel):
-    """
-    Volledig schema voor geëxtraheerde financiële data.
-    Dit is de canonical form voor audit matching.
-    """
+    """Complete extracted financial data from PDF (STRICT MODE)."""
     
-    # Document metadata
-    document_type: DocumentType = Field(..., description="Type document")
-    peildatum_of_jaar: str = Field(..., description="Peildatum of jaar (YYYY-MM-DD of YYYY)")
-    extraction_date: str = Field(default_factory=lambda: datetime.now().isoformat())
+    model_config = ConfigDict(
+        strict=True,
+        str_strip_whitespace=True,
+        validate_assignment=True,
+    )
     
-    # WOZ/Vastgoed
-    woz_gegevens: Optional[PropertyInfo] = Field(None)
-    
-    # Bankrekeningen
-    bank_saldi: Optional[List[BankBalance]] = Field(None, description="Lijst van bankrekeningen")
-    totaal_bank_saldi: Optional[float] = Field(None, description="Som van alle banksaldi")
-    
-    # Hypotheek
-    hypotheek_info: Optional[MortgageInfo] = Field(None)
-    
-    # Bedrijfsinkomen
-    bedrijfsinkomen: Optional[BusinessIncome] = Field(None)
-    
-    # Box 3 / Belegingen
-    box3_totaalwaarde: Optional[float] = Field(None, description="Totale waarde Box 3 vermogen")
-    beleggingsrekeningen: Optional[List[Dict[str, Any]]] = Field(None)
-    
-    # Overige posten
-    overige_inkomsten: Optional[float] = Field(None, description="Andere inkomstenbronnen")
-    renteopbrengsten: Optional[float] = Field(None)
-    dividendopbrengsten: Optional[float] = Field(None)
-    
-    # Aftrekposten
-    giften_charitabel: Optional[float] = Field(None, description="Giften aan liefdadige doelen")
-    studiefinanciering_rente: Optional[float] = Field(None)
-    hypotheekrente_totaal: Optional[float] = Field(None)
-    
-    # Bijzondere regelingen
-    kia_investering: Optional[float] = Field(None, description="Kleinschaligheidsiftrek")
-    herinvesteringsreserve: Optional[float] = Field(None)
-    
-    # Metadata
-    betrouwbaarheid_score: float = Field(0.0, ge=0.0, le=1.0, 
-                                         description="Hoe zeker de AI is (0-1)")
-    geëxtraheerde_velden: List[str] = Field(default_factory=list, 
-                                           description="Welke velden zijn echt gevonden")
-    waarschuwingen: List[str] = Field(default_factory=list,
-                                     description="Problemen bij extractie")
-    ruwe_extractie: Optional[str] = Field(None, description="Ruwe tekst uit PDF")
+    extraction_confidence: float = Field(
+        ...,
+        ge=0,
+        le=1,
+        description="Extraction confidence 0-1 (0% to 100%)"
+    )
+    bank_accounts: list[BankBalance] = Field(
+        default_factory=list,
+        description="All bank accounts found in document"
+    )
+    mortgages: list[MortgageInfo] = Field(
+        default_factory=list,
+        description="All mortgage loans found"
+    )
+    business_income: Optional[BusinessIncome] = Field(
+        None,
+        description="Business income if document contains business info"
+    )
+    real_estate: list[PropertyInfo] = Field(
+        default_factory=list,
+        description="All real estate properties found"
+    )
+    other_assets_eur: float = Field(
+        default=0,
+        ge=0,
+        description="Other assets/investments value"
+    )
+    deductible_items_eur: float = Field(
+        default=0,
+        ge=0,
+        description="Tax deductible items"
+    )
+    kia_profit_eur: float = Field(
+        default=0,
+        description="KIA profit (young entrepreneur deduction)"
+    )
+    document_type: str = Field(
+        default="unknown",
+        description="Type of document (WOZ_beschikking, bank_statement, etc.)"
+    )
+
+    @field_validator('extraction_confidence')
+    @classmethod
+    def validate_confidence(cls, v: float) -> float:
+        """Log warnings for low confidence extractions."""
+        if v < 0.6:
+            logger.warning(f"Very low extraction confidence: {v*100:.0f}%")
+        elif v < 0.8:
+            logger.info(f"Moderate extraction confidence: {v*100:.0f}%")
+        return v
 
 
 # ============================================================================
-# DOCUMENT EXTRACTOR CLASS
+# DOCUMENT EXTRACTOR
 # ============================================================================
 
 class DocumentExtractor:
+    """Extract financial data from PDFs using Gemini 1.5 Pro vision model.
+    
+    Features:
+    - Strict Pydantic validation in strict mode
+    - Retry logic with exponential backoff
+    - JSON parsing with 3 fallback strategies
+    - Comprehensive error handling
+    - Audit logging for compliance
+    
+    Example:
+        >>> extractor = DocumentExtractor(api_key="your-gemini-key")
+        >>> data = extractor.extract_from_pdf("invoice.pdf")
+        >>> print(data.bank_accounts)
     """
-    Gemini 1.5 Pro-gebaseerde documentextractor.
-    Herkent financiële documenten en extraheert gestructureerde data.
-    """
-    
-    SYSTEM_PROMPT = """Je bent een expert fiscaal auditor en documentextractor. 
-Je taak is om financiële documenten (PDF's) te analyseren en alle relevante gegevens 
-in gestructureerde JSON-format terug te geven.
 
-STRIKTE REGELS:
-1. Extracteer ALLEEN gegevens die werkelijk in het document voorkomen.
-2. Beleg getallen in JSON met het type 'number' (geen strings).
-3. Datums altijd in YYYY-MM-DD format (of YYYY voor jaren).
-4. Currencywaarden altijd in EUR (als nodig: converteer).
-5. Als je onzeker bent: laat het veld leeg (null) maar voeg een waarschuwing toe.
-6. Nooit raden, hallucinerend inventeren.
+    MAX_RETRIES = 3
+    RETRY_DELAY = 2  # seconds
 
-FOCUS GEBIEDEN:
-- WOZ-waarden en vastgoedgegevens
-- Banksaldi en rente-inkomsten
-- Hypotheekschulden en betaalde rente
-- Bedrijfsinkomen (omzet, winst)
-- Box 3 vermogen (beleggingen, spaarrekeningen)
-- Aftrekbare posten (giften, studiefinanciering, hypotheekrente)
-- Bijzondere regelingen (KIA, herinvesteringsreserve)
-
-Retourneer het antwoord UITSLUITEND als geldige JSON (geen markdown, geen ```json wrapper)."""
-    
-    def __init__(self, api_key: str, model: str = "gemini-1.5-pro-vision-latest"):
-        """
-        Parameters:
-        -----------
-        api_key : str
-            Google Gemini API key
-        model : str
-            Model name (default: gemini-1.5-pro-vision-latest)
-        """
-        self.api_key = api_key
-        self.model = model
-        genai.configure(api_key=api_key)
-        self.client = genai.GenerativeModel(model)
-    
-    async def extract_from_pdf(self, pdf_path: str, 
-                              document_type_hint: Optional[DocumentType] = None) -> ExtractedFinancialData:
-        """
-        Extraheer financiële data uit een PDF.
+    def __init__(self, api_key: str):
+        """Initialize DocumentExtractor with Gemini API key.
         
-        Parameters:
-        -----------
-        pdf_path : str
-            Pad naar PDF-bestand
-        document_type_hint : Optional[DocumentType]
-            Hint wat voor soort document het is
-        
-        Returns:
-        --------
-        ExtractedFinancialData
-            Gevalideerde gestructureerde data
-        
+        Args:
+            api_key: Google Gemini API key
+            
         Raises:
-        -------
-        ValidationError : Als JSON niet voldoet aan schema
-        FileNotFoundError : Als PDF niet bestaat
+            ValueError: If API key is empty or invalid
         """
-        try:
-            # Lees PDF en converteer naar base64
-            with open(pdf_path, 'rb') as f:
-                pdf_data = f.read()
-            pdf_base64 = base64.standard_b64encode(pdf_data).decode('utf-8')
-        except FileNotFoundError:
-            raise FileNotFoundError(f"PDF niet gevonden: {pdf_path}")
-        
-        # Bouw prompt met context
-        user_prompt = self._build_extraction_prompt(document_type_hint)
+        if not api_key or not api_key.strip():
+            raise ValueError("Google API key cannot be empty")
         
         try:
-            # Call Gemini met vision
-            response = self.client.generate_content([
-                user_prompt,
-                {
-                    "mime_type": "application/pdf",
-                    "data": pdf_base64
-                }
-            ])
-            
-            raw_response = response.text
+            genai.configure(api_key=api_key)
+            self.model = genai.GenerativeModel("gemini-1.5-pro-vision-latest")
+            logger.info("DocumentExtractor initialized with Gemini 1.5 Pro")
         except Exception as e:
-            raise RuntimeError(f"Gemini API error: {str(e)}")
+            logger.error(f"Failed to initialize Gemini: {str(e)}")
+            raise ValueError(f"Invalid API key: {str(e)}")
+
+    def _pdf_to_base64(self, pdf_path: str) -> str:
+        """Convert PDF file to base64 string for Gemini API.
         
-        # Parse en validate JSON
-        try:
-            # Clean response (verwijder markdown wrappers als aanwezig)
-            clean_json = raw_response.strip()
-            if clean_json.startswith("```json"):
-                clean_json = clean_json[7:]
-            if clean_json.startswith("```"):
-                clean_json = clean_json[3:]
-            if clean_json.endswith("```"):
-                clean_json = clean_json[:-3]
+        Args:
+            pdf_path: Path to PDF file
             
-            data_dict = json.loads(clean_json)
-            
-            # Validate tegen Pydantic schema
-            extracted_data = ExtractedFinancialData(**data_dict)
-            
-            # Sla ruwe extractie op voor audit trail
-            extracted_data.ruwe_extractie = raw_response
-            
-            return extracted_data
-            
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Gemini response is geen geldige JSON: {str(e)}")
-        except ValidationError as e:
-            raise ValueError(f"Geëxtraheerde data voldoet niet aan schema: {str(e)}")
-    
-    async def extract_batch(self, pdf_paths: List[str]) -> List[ExtractedFinancialData]:
-        """
-        Extraheer data uit meerdere PDF's (parallel).
-        
-        Parameters:
-        -----------
-        pdf_paths : List[str]
-            Lijst van PDF-paden
-        
         Returns:
-        --------
-        List[ExtractedFinancialData]
-            Geëxtraheerde data per PDF
+            Base64 encoded PDF content
+            
+        Raises:
+            ValueError: If file doesn't exist, is empty, or not a valid PDF
         """
-        tasks = [self.extract_from_pdf(path) for path in pdf_paths]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Filter errors
-        valid_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                print(f"Error extracting {pdf_paths[i]}: {result}")
-            else:
-                valid_results.append(result)
-        
-        return valid_results
-    
-    def extract_from_pdf_sync(self, pdf_path: str, 
-                             document_type_hint: Optional[DocumentType] = None) -> ExtractedFinancialData:
-        """
-        Synchrone wrapper voor extract_from_pdf (voor Streamlit).
-        """
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
         try:
-            return loop.run_until_complete(self.extract_from_pdf(pdf_path, document_type_hint))
-        finally:
-            loop.close()
-    
-    def _build_extraction_prompt(self, document_type_hint: Optional[DocumentType]) -> str:
-        """Bouw de extractie prompt met context"""
-        base_prompt = self.SYSTEM_PROMPT
+            with open(pdf_path, "rb") as pdf_file:
+                content = pdf_file.read()
+                
+                # Validate PDF
+                if not content:
+                    raise ValueError("PDF file is empty")
+                
+                if not content.startswith(b"%PDF"):
+                    raise ValueError("File is not a valid PDF (missing PDF header)")
+                
+                # Limit file size (Gemini has limits)
+                if len(content) > 100_000_000:  # 100 MB limit
+                    raise ValueError("PDF file is too large (max 100 MB)")
+                
+                return base64.b64encode(content).decode("utf-8")
+                
+        except FileNotFoundError:
+            raise ValueError(f"PDF file not found: {pdf_path}")
+        except IOError as e:
+            raise ValueError(f"Error reading PDF: {str(e)}")
+
+    def _parse_gemini_response(self, response_text: str) -> dict:
+        """Parse Gemini response with multiple fallback strategies.
         
-        if document_type_hint:
-            base_prompt += f"\n\nDocument type hint: {document_type_hint.value}"
+        Tries:
+        1. Direct JSON parse
+        2. Extract from markdown code block
+        3. Extract first JSON object
         
-        base_prompt += "\n\nReturneer de geëxtraheerde data in dit JSON formaat:"
-        base_prompt += """
+        Args:
+            response_text: Raw response from Gemini
+            
+        Returns:
+            Parsed JSON dictionary
+            
+        Raises:
+            ValueError: If no valid JSON found
+        """
+        if not response_text or not response_text.strip():
+            raise ValueError("Empty response from Gemini API")
+
+        # Strategy 1: Direct JSON parse
+        try:
+            return json.loads(response_text)
+        except json.JSONDecodeError:
+            logger.debug("Direct JSON parse failed, trying markdown extraction...")
+
+        # Strategy 2: Extract from markdown code blocks
+        json_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", response_text)
+        if json_match:
+            try:
+                content = json_match.group(1).strip()
+                return json.loads(content)
+            except json.JSONDecodeError:
+                logger.debug("Markdown extraction failed, trying object extraction...")
+
+        # Strategy 3: Extract first JSON object
+        json_match = re.search(r"\{[\s\S]*\}", response_text)
+        if json_match:
+            try:
+                content = json_match.group(0)
+                return json.loads(content)
+            except json.JSONDecodeError:
+                logger.debug("Object extraction failed, all strategies exhausted")
+
+        # All strategies failed
+        raise ValueError(
+            f"Could not extract valid JSON from Gemini response. "
+            f"Response (first 300 chars): {response_text[:300]}"
+        )
+
+    async def _extract_with_retry(self, pdf_base64: str) -> str:
+        """Call Gemini API with retry logic and exponential backoff.
+        
+        Args:
+            pdf_base64: Base64 encoded PDF content
+            
+        Returns:
+            Raw JSON response from Gemini
+            
+        Raises:
+            RuntimeError: If all retries fail
+        """
+        system_prompt = """You are an expert financial document analyzer. Extract financial data from the PDF.
+
+CRITICAL: RESPOND WITH ONLY VALID JSON. NO MARKDOWN, NO EXPLANATIONS, NO TEXT.
+
+Your response must be valid JSON with this exact structure:
 {
-  "document_type": "DocumentType (WOZ_Beschikking/Bank_Jaaroverzicht/etc)",
-  "peildatum_of_jaar": "YYYY-MM-DD of YYYY",
-  "woz_gegevens": {
-    "woz_waarde": 500000.0,
-    "adres": "[ADRES_GEANONIMISEERD]",
-    "eigenaar_percentage": 100.0,
-    "type_woning": "Appartementsrecht"
-  },
-  "bank_saldi": [
-    {
-      "iban": "[IBAN_GEANONIMISEERD]",
-      "saldo": 50000.0,
-      "rente": null,
-      "peildatum": "2024-12-31"
-    }
-  ],
-  "totaal_bank_saldi": 50000.0,
-  "hypotheek_info": {
-    "schuld_ausstande": 300000.0,
-    "betaalde_rente": 12000.0,
-    "percentage": 4.0,
-    "type_hypotheek": "Aflossingshypotheek"
-  },
-  "bedrijfsinkomen": {
-    "bruto_omzet": 150000.0,
-    "kosten_totaal": 50000.0,
-    "winst": 100000.0,
-    "type_onderneming": "Eenmanszaak"
-  },
-  "box3_totaalwaarde": 75000.0,
-  "overige_inkomsten": null,
-  "renteopbrengsten": 2500.0,
-  "dividendopbrengsten": null,
-  "giften_charitabel": 5000.0,
-  "hypotheekrente_totaal": 12000.0,
-  "kia_investering": null,
-  "herinvesteringsreserve": null,
-  "betrouwbaarheid_score": 0.95,
-  "geëxtraheerde_velden": ["woz_gegevens", "bank_saldi", "hypotheek_info"],
-  "waarschuwingen": []
+    "extraction_confidence": 0.95,
+    "bank_accounts": [
+        {
+            "account_number": "NL12ABNA0123456789",
+            "bank_name": "ABN AMRO",
+            "balance_eur": 50000.0,
+            "currency": "EUR"
+        }
+    ],
+    "mortgages": [
+        {
+            "principal_eur": 300000.0,
+            "current_balance_eur": 250000.0,
+            "interest_rate_pct": 2.5,
+            "monthly_payment_eur": 1200.0,
+            "loan_type": "hypotheek"
+        }
+    ],
+    "business_income": null,
+    "real_estate": [
+        {
+            "address": "Straat 1, Amsterdam",
+            "woz_value_eur": 500000.0,
+            "year_valued": 2024,
+            "ownership_pct": 100.0
+        }
+    ],
+    "other_assets_eur": 0.0,
+    "deductible_items_eur": 5000.0,
+    "kia_profit_eur": 0.0,
+    "document_type": "bank_statement"
 }
+
+RULES:
+1. ALL numbers must be floats/integers (not strings)
+2. Dates must be YYYY-MM-DD format
+3. Currency is ALWAYS EUR
+4. If data not found: use 0 for amounts, empty [] for lists, null for objects
+5. confidence must be 0-1
+6. ownership_pct must be 1-100
 """
-        return base_prompt
 
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                logger.debug(f"Gemini API call (attempt {attempt+1}/{self.MAX_RETRIES})")
+                
+                response = await asyncio.to_thread(
+                    self.model.generate_content,
+                    [
+                        system_prompt,
+                        {
+                            "mime_type": "application/pdf",
+                            "data": pdf_base64,
+                        },
+                    ],
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.0,  # Deterministic output
+                        top_p=1.0,
+                        max_output_tokens=4096,
+                    ),
+                )
+                
+                if not response or not response.text:
+                    raise ValueError("Empty response from Gemini")
+                
+                logger.debug(f"Received response ({len(response.text)} chars)")
+                return response.text
 
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
+            except asyncio.TimeoutError:
+                if attempt < self.MAX_RETRIES - 1:
+                    wait_time = self.RETRY_DELAY * (2 ** attempt)  # Exponential backoff
+                    logger.warning(
+                        f"Gemini timeout. Retrying in {wait_time}s "
+                        f"({attempt+1}/{self.MAX_RETRIES})"
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise RuntimeError("Gemini API timeout after all retries")
 
-def merge_financial_data(datasets: List[ExtractedFinancialData]) -> Dict[str, Any]:
-    """
-    Merge multiple extracted datasets (bijv. van verschillende documenten).
-    """
-    merged = {
-        "totaal_woz": None,
-        "totaal_bank_saldi": 0.0,
-        "totaal_hypotheekschuld": None,
-        "totaal_bedrijfswinst": None,
-        "totaal_box3": 0.0,
-        "alle_documenten": []
-    }
-    
-    for data in datasets:
-        merged["alle_documenten"].append({
-            "type": data.document_type.value,
-            "datum": data.peildatum_of_jaar
-        })
-        
-        if data.woz_gegevens and data.woz_gegevens.woz_waarde:
-            merged["totaal_woz"] = data.woz_gegevens.woz_waarde
-        
-        if data.totaal_bank_saldi:
-            merged["totaal_bank_saldi"] += data.totaal_bank_saldi
-        
-        if data.hypotheek_info and data.hypotheek_info.schuld_ausstande:
-            merged["totaal_hypotheekschuld"] = data.hypotheek_info.schuld_ausstande
-        
-        if data.bedrijfsinkomen and data.bedrijfsinkomen.winst:
-            merged["totaal_bedrijfswinst"] = data.bedrijfsinkomen.winst
-        
-        if data.box3_totaalwaarde:
-            merged["totaal_box3"] += data.box3_totaalwaarde
-    
-    return merged
+            except Exception as e:
+                error_msg = str(e)
+                if attempt < self.MAX_RETRIES - 1:
+                    wait_time = self.RETRY_DELAY * (2 ** attempt)
+                    logger.warning(
+                        f"Gemini error: {error_msg}. "
+                        f"Retrying in {wait_time}s ({attempt+1}/{self.MAX_RETRIES})"
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise RuntimeError(f"Gemini API error: {error_msg}")
 
+    async def extract_from_pdf_async(self, pdf_path: str) -> ExtractedFinancialData:
+        """Asynchronously extract financial data from PDF.
+        
+        Args:
+            pdf_path: Path to PDF file
+            
+        Returns:
+            ExtractedFinancialData with fully validated fields
+            
+        Raises:
+            ValueError: If PDF is invalid
+            RuntimeError: If extraction fails after retries
+            ValidationError: If extracted data fails Pydantic validation
+        """
+        try:
+            logger.info(f"Starting extraction from: {pdf_path}")
+            
+            # Step 1: Validate and encode PDF
+            pdf_base64 = self._pdf_to_base64(pdf_path)
+            logger.debug(f"PDF encoded ({len(pdf_base64)} bytes base64)")
 
-if __name__ == "__main__":
-    # Placeholder voor testing (je hebt API key nodig)
-    print("Document Extractor module loaded.")
-    print("Usage: Create instance van DocumentExtractor en call extract_from_pdf()")
+            # Step 2: Call Gemini API with retries
+            response_text = await self._extract_with_retry(pdf_base64)
+
+            # Step 3: Parse JSON response
+            response_data = self._parse_gemini_response(response_text)
+
+            # Step 4: Strict Pydantic validation
+            extracted = ExtractedFinancialData(**response_data)
+
+            logger.info(
+                f"✓ Extraction successful. Confidence: {extracted.extraction_confidence*100:.0f}%. "
+                f"Accounts: {len(extracted.bank_accounts)}, "
+                f"Mortgages: {len(extracted.mortgages)}, "
+                f"Properties: {len(extracted.real_estate)}"
+            )
+            
+            return extracted
+
+        except ValueError as e:
+            logger.error(f"Validation error: {str(e)}")
+            raise
+
+        except ValidationError as e:
+            logger.error(f"Pydantic validation error: {e.error_count()} errors")
+            for error in e.errors():
+                logger.error(f"  - {error['loc']}: {error['msg']}")
+            raise RuntimeError(f"Data validation failed: {str(e)}")
+
+        except RuntimeError as e:
+            logger.error(f"Extraction failed: {str(e)}")
+            raise
+
+        except Exception as e:
+            logger.error(f"Unexpected error: {type(e).__name__}: {str(e)}")
+            raise RuntimeError(f"PDF extraction failed: {str(e)}")
+
+    def extract_from_pdf(self, pdf_path: str) -> ExtractedFinancialData:
+        """Synchronous wrapper for extract_from_pdf_async.
+        
+        Args:
+            pdf_path: Path to PDF file
+            
+        Returns:
+            ExtractedFinancialData
+            
+        Raises:
+            ValueError: If PDF is invalid
+            RuntimeError: If extraction fails
+        """
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(self.extract_from_pdf_async(pdf_path))
+        except Exception as e:
+            logger.error(f"Sync extraction failed: {str(e)}")
+            raise
+        finally:
+            try:
+                loop.close()
+            except Exception as close_err:
+                logger.debug(f"Error closing event loop: {close_err}")
