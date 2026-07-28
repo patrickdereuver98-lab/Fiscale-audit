@@ -198,3 +198,167 @@ COMMENT ON TABLE fiscal_notes IS 'Inhoudelijke risico-analyses van Claude';
 COMMENT ON TABLE uploaded_documents IS 'Metadata van geüploade en geverifieerde PDF-documenten';
 COMMENT ON COLUMN dossiers.aangiftejaar IS 'Jaar van de aangifteperiode (bijv. 2024)';
 COMMENT ON COLUMN audit_results.status IS 'MATCH: perfect match, MISMATCH: verschil > 0, MISSING_PROOF: geen ondersteunend document';
+
+
+-- ============================================================================
+-- FISCALE KENNISBANK
+-- ============================================================================
+-- Per belastingjaar gescheiden. Een regel die in 2023 gold en in 2024 niet
+-- meer, mag bij een aangifte 2024 niet worden opgehaald. Zonder die scheiding
+-- levert de kennisbank met gezag een verouderd antwoord, en dat is schadelijker
+-- dan geen antwoord.
+
+CREATE TYPE kennis_herkomst AS ENUM (
+    'WETGEVING',       -- wettekst, vrij van auteursrecht
+    'BELASTINGDIENST', -- publieke toelichting van de Belastingdienst
+    'BELEIDSBESLUIT',
+    'RECHTSPRAAK',
+    'KANTOORMEMO',     -- eigen vastlegging
+    'MODEL_GEGENEREERD' -- door een taalmodel opgesteld, nog niet nagekeken
+);
+
+CREATE TYPE kennis_status AS ENUM (
+    'CONCEPT',      -- opgenomen, nog niet nagekeken
+    'GEVERIFIEERD', -- door een mens gecontroleerd en akkoord
+    'VERVALLEN'     -- niet meer van toepassing, bewaard voor oudere jaren
+);
+
+CREATE TABLE IF NOT EXISTS fiscale_kennis (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    belastingjaar INTEGER NOT NULL,
+    onderwerp TEXT NOT NULL,          -- bijv. 'bijleenregeling'
+    trigger_kind TEXT,                -- koppeling met triggers.py, bijv. 'WONING_AANKOOP'
+
+    -- de inhoud
+    titel TEXT NOT NULL,
+    inhoud TEXT NOT NULL,
+    toepassingsvoorwaarden TEXT,
+
+    -- herkomst en houdbaarheid
+    herkomst kennis_herkomst NOT NULL,
+    bron_url TEXT,
+    bron_citaat TEXT,
+    status kennis_status NOT NULL DEFAULT 'CONCEPT',
+
+    -- Wie heeft dit nagekeken en wanneer. Een kennisbank die een taalmodel
+    -- zelf vult en daarna zelf leest is een gesloten kring zonder externe
+    -- toets: een fout bevestigt zichzelf. Deze twee kolommen maken zichtbaar
+    -- welke regels een mens heeft gezien.
+    geverifieerd_door TEXT,
+    geverifieerd_op DATE,
+
+    -- vervangingsketen, zodat een oudere aangifte de oude regel blijft zien
+    vervangt_id UUID REFERENCES fiscale_kennis(id),
+
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+
+    CONSTRAINT geldig_belastingjaar
+        CHECK (belastingjaar >= 2015 AND belastingjaar <= 2100),
+    -- Geverifieerd zonder naam en datum kan niet: dan is de status een lege
+    -- belofte en zou de reviewnote onterecht 'gecontroleerd' tonen.
+    CONSTRAINT verificatie_volledig CHECK (
+        status <> 'GEVERIFIEERD'
+        OR (geverifieerd_door IS NOT NULL AND geverifieerd_op IS NOT NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_kennis_jaar_onderwerp
+    ON fiscale_kennis(belastingjaar, onderwerp);
+CREATE INDEX IF NOT EXISTS idx_kennis_trigger
+    ON fiscale_kennis(trigger_kind, belastingjaar);
+CREATE INDEX IF NOT EXISTS idx_kennis_status ON fiscale_kennis(status);
+
+-- Alleen wat is nagekeken, per jaar. Dit is de weergave waar de tool uit
+-- ophaalt wanneer een verwijzing in de reviewnote terechtkomt.
+CREATE OR REPLACE VIEW kennis_geverifieerd AS
+SELECT id, belastingjaar, onderwerp, trigger_kind, titel, inhoud,
+       toepassingsvoorwaarden, herkomst, bron_url, geverifieerd_op
+FROM fiscale_kennis
+WHERE status = 'GEVERIFIEERD';
+
+COMMENT ON TABLE fiscale_kennis IS
+    'Fiscale regels per belastingjaar. Alleen rijen met status GEVERIFIEERD '
+    'mogen in een reviewnote worden aangehaald; CONCEPT en MODEL_GEGENEREERD '
+    'zijn uitsluitend intern en moeten als onbevestigd worden weergegeven.';
+
+
+-- ============================================================================
+-- BEHANDELSTATUS PER BEVINDING
+-- ============================================================================
+-- Zonder deze tabel komt elke terechte uitzondering bij iedere nieuwe run
+-- opnieuw als rood vlaggetje naar boven, en kijkt niemand er na twee weken nog
+-- naar.
+
+CREATE TYPE review_status AS ENUM (
+    'OPEN', 'SEEN', 'ACCEPTED', 'CORRECTION_REQUIRED'
+);
+
+CREATE TABLE IF NOT EXISTS bevinding_status (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    dossier_id UUID NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+
+    -- Stabiele sleutel van de bevinding, los van de rij-id, zodat een
+    -- accordering een nieuwe run overleeft.
+    bevinding_sleutel TEXT NOT NULL,
+    aangiftepost TEXT NOT NULL,
+
+    status review_status NOT NULL DEFAULT 'OPEN',
+    onderbouwing TEXT,
+    behandeld_door TEXT,
+    behandeld_op TIMESTAMP WITH TIME ZONE,
+
+    -- Het bedrag waarop is geaccordeerd. Wijzigt het bedrag bij een volgende
+    -- run, dan gaat de bevinding terug naar OPEN: een akkoord op EUR 500 is
+    -- geen akkoord op EUR 5.000.
+    geaccordeerd_verschil NUMERIC(15, 2),
+
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+
+    CONSTRAINT een_status_per_bevinding UNIQUE (dossier_id, bevinding_sleutel),
+    -- Akkoord zonder reden is geen akkoord maar een klik.
+    CONSTRAINT akkoord_met_reden CHECK (
+        status <> 'ACCEPTED'
+        OR (onderbouwing IS NOT NULL AND length(trim(onderbouwing)) > 0)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_bevinding_dossier ON bevinding_status(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_bevinding_status ON bevinding_status(status);
+
+COMMENT ON COLUMN bevinding_status.geaccordeerd_verschil IS
+    'Bedrag waarop is geaccordeerd. Wijkt het verschil bij een volgende run '
+    'af, dan hoort de bevinding opnieuw als OPEN te verschijnen.';
+
+
+-- ============================================================================
+-- AANGETROFFEN BIJZONDERE SITUATIES
+-- ============================================================================
+-- Vastleggen omdat een deel doorwerkt naar latere jaren. De bijleenregeling en
+-- de oudedagsreserve zijn niet te controleren zonder de gegevens van eerdere
+-- jaren; deze tabel maakt die controle volgend jaar mogelijk.
+
+CREATE TABLE IF NOT EXISTS dossier_situaties (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    dossier_id UUID NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+    belastingjaar INTEGER NOT NULL,
+
+    trigger_kind TEXT NOT NULL,
+    reden TEXT,
+    raakt_volgend_jaar BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Waarden die volgend jaar nodig zijn, bijvoorbeeld de eigenwoningreserve
+    -- of de stand van de oudedagsreserve.
+    doorwerkende_waarden JSONB DEFAULT '{}'::jsonb,
+
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+
+    CONSTRAINT geldig_situatiejaar
+        CHECK (belastingjaar >= 2015 AND belastingjaar <= 2100)
+);
+
+CREATE INDEX IF NOT EXISTS idx_situaties_dossier ON dossier_situaties(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_situaties_doorwerking
+    ON dossier_situaties(raakt_volgend_jaar, belastingjaar);
