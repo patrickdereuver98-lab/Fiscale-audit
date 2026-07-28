@@ -667,3 +667,300 @@ table tbody tr:last-child td {
         width: 100%;
     }
 }
+
+/* ============================================================================
+   WERKPROGRAMMA
+   ============================================================================
+   De reviewer werkt een lijst af, dus de interface is een lijst en geen
+   scoreboard. Vormtaal van een papieren controledossier: een sign-off-rail in
+   de kantlijn die na accordering een vinkje met initialen wordt, een
+   dossierverwijzing per regel, en verder zo stil mogelijk.
+   ============================================================================ */
+
+/* Bedragen moeten cijfer voor cijfer uitlijnen. Zonder tabellarische cijfers
+   staan de duizenden niet onder elkaar en ziet het oog een ordegroottefout
+   niet. Voor een controletool weegt dit zwaarder dan het lijkt. */
+.bedrag,
+.vergelijk-waarde,
+.band-cijfer,
+table td,
+[data-testid="stDataFrame"] {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+}
+
+/* ---------- kopband ---------- */
+
+.dossierband {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-lg);
+    padding: var(--space-md) var(--space-lg);
+    background: var(--dark-bg-alt);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-lg);
+}
+
+.dossierband-naam {
+    font-size: 1.05rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+}
+
+.dossierband-meta {
+    font-size: 0.8rem;
+    color: var(--text-tertiary);
+    letter-spacing: 0.02em;
+}
+
+.band-cijfer {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.band-cijfer strong {
+    color: var(--text-primary);
+    font-weight: 650;
+}
+
+/* Voortgang als een dunne streep, niet als een gevierd percentage. Het is
+   gereedschap, geen prestatie. */
+.voortgang {
+    flex: 1 1 140px;
+    height: 3px;
+    min-width: 120px;
+    background: var(--border-light);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.voortgang-vol {
+    height: 100%;
+    background: var(--success);
+    border-radius: 2px;
+}
+
+/* ---------- bevinding ---------- */
+
+.bevinding {
+    display: grid;
+    grid-template-columns: 4px 1fr;
+    gap: 0;
+    background: var(--dark-bg-alt);
+    border: 1px solid var(--border);
+    border-left: none;
+    border-radius: 0 var(--radius-md) var(--radius-md) 0;
+    margin-bottom: var(--space-sm);
+    overflow: hidden;
+}
+
+/* De rail is het signatuurelement: kleur naar gevolg, en de enige plek waar
+   deze interface hard wordt. */
+.bevinding-rail {
+    background: var(--border-light);
+}
+
+.bevinding-rail.ernst-kritiek  { background: var(--error); }
+.bevinding-rail.ernst-hoog     { background: #EA580C; }
+.bevinding-rail.ernst-middel   { background: var(--warning); }
+.bevinding-rail.ernst-laag     { background: var(--success); }
+.bevinding-rail.afgehandeld    { background: var(--border-light); }
+
+.bevinding-body {
+    padding: var(--space-md) var(--space-lg);
+}
+
+.bevinding.afgehandeld {
+    opacity: 0.55;
+}
+
+.bevinding.afgehandeld:hover {
+    opacity: 0.85;
+}
+
+.bevinding-kop {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-sm) var(--space-md);
+    margin-bottom: var(--space-sm);
+}
+
+/* Soort bevinding als eyebrow, gespatieerd en klein: het labelt en schreeuwt
+   niet. */
+.bevinding-soort {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+
+.bevinding-soort.ernst-kritiek { color: var(--error-light); }
+.bevinding-soort.ernst-hoog    { color: #FB923C; }
+.bevinding-soort.ernst-middel  { color: var(--warning-light); }
+
+.bevinding-post {
+    font-size: 0.98rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+/* Werkpapierverwijzing, zoals een dossierreferentie in de kantlijn. */
+.bevinding-ref {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-tertiary);
+    letter-spacing: 0.02em;
+}
+
+/* ---------- vergelijking ---------- */
+
+.vergelijk {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-lg);
+    margin: var(--space-sm) 0;
+}
+
+.vergelijk-blok {
+    min-width: 118px;
+}
+
+.vergelijk-kop {
+    display: block;
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 2px;
+}
+
+.vergelijk-waarde {
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    color: var(--text-primary);
+}
+
+.vergelijk-waarde.leeg {
+    color: var(--text-tertiary);
+}
+
+.vergelijk-blok.verschil .vergelijk-waarde {
+    font-weight: 650;
+    color: var(--error-light);
+}
+
+.bevinding-uitleg {
+    font-size: 0.85rem;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    margin-top: var(--space-sm);
+}
+
+.bevinding-gevolg {
+    font-size: 0.82rem;
+    color: var(--text-tertiary);
+    margin-top: 4px;
+}
+
+/* ---------- sign-off ---------- */
+
+.signoff {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: var(--space-sm);
+    padding: 3px 10px 3px 6px;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+}
+
+.signoff.akkoord {
+    border-color: rgba(5, 150, 105, 0.5);
+    color: var(--success-light);
+}
+
+.signoff.correctie {
+    border-color: rgba(220, 38, 38, 0.5);
+    color: var(--error-light);
+}
+
+/* Vinkje in de kantlijn, het tickmark uit een papieren dossier. */
+.signoff-vink {
+    font-size: 0.9rem;
+    line-height: 1;
+}
+
+.signoff-initialen {
+    font-family: var(--font-mono);
+    font-weight: 650;
+    letter-spacing: 0.04em;
+}
+
+.signoff-reden {
+    color: var(--text-tertiary);
+    font-style: italic;
+}
+
+/* ---------- rustige afronding ---------- */
+
+.alles-akkoord {
+    padding: var(--space-xl) var(--space-lg);
+    text-align: center;
+    border: 1px dashed var(--border-light);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+}
+
+.alles-akkoord-vink {
+    display: block;
+    font-size: 1.6rem;
+    color: var(--success);
+    margin-bottom: var(--space-sm);
+}
+
+/* ---------- documentenlijst ---------- */
+
+.docregel {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-md);
+    padding: 7px var(--space-md);
+    border-bottom: 1px solid var(--border);
+    font-size: 0.86rem;
+}
+
+.docregel:last-child {
+    border-bottom: none;
+}
+
+.docregel-jaar {
+    font-family: var(--font-mono);
+    color: var(--text-tertiary);
+}
+
+.docregel-naam {
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
+.docregel-melding {
+    margin-left: auto;
+    text-align: right;
+    color: var(--warning-light);
+    font-size: 0.8rem;
+}
+
+@media (max-width: 640px) {
+    .dossierband { gap: var(--space-sm) var(--space-md); }
+    .vergelijk { gap: var(--space-md); }
+    .bevinding-ref { margin-left: 0; width: 100%; }
+    .docregel-melding { margin-left: 0; width: 100%; text-align: left; }
+}

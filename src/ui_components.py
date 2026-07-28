@@ -371,3 +371,178 @@ def export_buttons(json_data: str, file_name: str = "controle") -> None:
     with kolom2:
         if st.button("Opnieuw laden", use_container_width=True):
             st.rerun()
+
+
+# ============================================================================
+# WERKPROGRAMMA
+# ============================================================================
+# De reviewer werkt een lijst af. Deze componenten renderen die lijst in de
+# vormtaal van een controledossier: een sign-off-rail in de kantlijn, een
+# werkpapierverwijzing, en bedragen die cijfer voor cijfer uitlijnen.
+
+_ERNST_KLASSE = {
+    "CRITICAL": "ernst-kritiek",
+    "HIGH": "ernst-hoog",
+    "MEDIUM": "ernst-middel",
+    "LOW": "ernst-laag",
+}
+
+
+def dossierband(
+    klant: str,
+    aangiftejaar: int,
+    uitgevoerd_op: str,
+    totaal: int,
+    afgehandeld: int,
+    open_punten: int,
+) -> None:
+    """Kopband met dossier en voortgang.
+
+    Voortgang staat er als een dunne streep en niet als gevierd percentage:
+    dit is gereedschap, geen prestatie.
+    """
+    fractie = 0 if totaal == 0 else afgehandeld / totaal
+
+    st.markdown(
+        f"""
+        <div class="dossierband">
+            <div>
+                <div class="dossierband-naam">{klant or "Naamloos dossier"}</div>
+                <div class="dossierband-meta">aangiftejaar {aangiftejaar} ·
+                    gecontroleerd {uitgevoerd_op}</div>
+            </div>
+            <div class="voortgang">
+                <div class="voortgang-vol" style="width:{fractie * 100:.0f}%"></div>
+            </div>
+            <div class="band-cijfer">
+                <strong>{afgehandeld}</strong> van {totaal} afgehandeld
+            </div>
+            <div class="band-cijfer">
+                <strong>{open_punten}</strong> open
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def bevinding_kaart(
+    soort_label: str,
+    post_naam: str,
+    referentie: str,
+    ernst: str,
+    aangegeven: Optional[float] = None,
+    uit_stukken: Optional[float] = None,
+    verschil: Optional[float] = None,
+    uitleg: str = "",
+    gevolg: str = "",
+    afgehandeld: bool = False,
+    signoff_status: str = "",
+    signoff_door: str = "",
+    signoff_reden: str = "",
+) -> None:
+    """Eén bevinding als regel in het werkprogramma.
+
+    Args:
+        soort_label: Aard van de bevinding, als eyebrow boven de post.
+        post_naam: Omschrijving van de aangiftepost.
+        referentie: Werkpapierverwijzing, bijvoorbeeld de postsleutel.
+        ernst: LOW, MEDIUM, HIGH of CRITICAL; bepaalt de kleur van de rail.
+        aangegeven: Bedrag volgens de aangifte.
+        uit_stukken: Bedrag volgens de brondocumenten.
+        verschil: Het verschil, apart uitgelicht.
+        uitleg: Toelichting op de bevinding.
+        gevolg: Wat het voor de klant betekent.
+        afgehandeld: Of de bevinding is afgedaan; dempt de hele regel.
+        signoff_status: Nederlandse status, bijvoorbeeld "Akkoord".
+        signoff_door: Initialen of naam van wie heeft afgetekend.
+        signoff_reden: Onderbouwing bij het accorderen.
+    """
+    ernst_klasse = "afgehandeld" if afgehandeld else _ERNST_KLASSE.get(ernst, "")
+    gedempt = " afgehandeld" if afgehandeld else ""
+
+    blokken = []
+    if aangegeven is not None or uit_stukken is not None:
+        blokken.append(
+            '<div class="vergelijk-blok"><span class="vergelijk-kop">Aangifte</span>'
+            f'<span class="vergelijk-waarde{"" if aangegeven is not None else " leeg"}">'
+            f'{format_currency(aangegeven) if aangegeven is not None else "niet ingevuld"}'
+            "</span></div>"
+        )
+        blokken.append(
+            '<div class="vergelijk-blok"><span class="vergelijk-kop">Stukken</span>'
+            f'<span class="vergelijk-waarde{"" if uit_stukken is not None else " leeg"}">'
+            f'{format_currency(uit_stukken) if uit_stukken is not None else "geen bewijs"}'
+            "</span></div>"
+        )
+    if verschil is not None:
+        blokken.append(
+            '<div class="vergelijk-blok verschil"><span class="vergelijk-kop">Verschil</span>'
+            f'<span class="vergelijk-waarde">{format_currency(verschil)}</span></div>'
+        )
+
+    vergelijking = (
+        f'<div class="vergelijk">{"".join(blokken)}</div>' if blokken else ""
+    )
+
+    signoff = ""
+    if signoff_status:
+        klasse = {"Akkoord": "akkoord", "Correctie vereist": "correctie"}.get(
+            signoff_status, ""
+        )
+        reden = (
+            f'<span class="signoff-reden">{signoff_reden}</span>'
+            if signoff_reden else ""
+        )
+        initialen = (
+            f'<span class="signoff-initialen">{signoff_door}</span>'
+            if signoff_door else ""
+        )
+        vink = "✓" if klasse == "akkoord" else "!"
+        signoff = (
+            f'<div class="signoff {klasse}"><span class="signoff-vink">{vink}</span>'
+            f"{initialen}<span>{signoff_status}</span>{reden}</div>"
+        )
+
+    st.markdown(
+        f"""
+        <div class="bevinding{gedempt}">
+            <div class="bevinding-rail {ernst_klasse}"></div>
+            <div class="bevinding-body">
+                <div class="bevinding-kop">
+                    <span class="bevinding-soort {ernst_klasse}">{soort_label}</span>
+                    <span class="bevinding-post">{post_naam}</span>
+                    <span class="bevinding-ref">{referentie}</span>
+                </div>
+                {vergelijking}
+                {f'<div class="bevinding-uitleg">{uitleg}</div>' if uitleg else ""}
+                {f'<div class="bevinding-gevolg">{gevolg}</div>' if gevolg else ""}
+                {signoff}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def alles_akkoord(bericht: str) -> None:
+    """Rustige melding wanneer er niets uit te zoeken valt."""
+    st.markdown(
+        f'<div class="alles-akkoord"><span class="alles-akkoord-vink">✓</span>'
+        f"{bericht}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def documentregel(jaar: Optional[int], naam: str, melding: str = "") -> None:
+    """Eén aangeleverd document, met een melding als de periode niet klopt."""
+    st.markdown(
+        f"""
+        <div class="docregel">
+            <span class="docregel-jaar">{jaar if jaar else "—"}</span>
+            <span class="docregel-naam">{naam}</span>
+            {f'<span class="docregel-melding">{melding}</span>' if melding else ""}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )

@@ -8,15 +8,13 @@ auditeerbaar: dezelfde invoer geeft altijd dezelfde uitkomst.
 Codeconventie: identifiers en docstrings zijn Engels (standaard voor Python),
 alle teksten die de gebruiker ziet zijn Nederlands.
 
-LET OP - de AG-codetabel hieronder is een projectconventie, geen geverifieerde
-overname van de officiele aangiftecodes. Voor productiegebruik moet elke regel
-een-op-een gecontroleerd worden tegen de aangiftesoftware of de RGS-brugstaat.
-De aansluitlogica is generiek; alleen de mapping is dossierspecifiek.
+De posten en de herleiding uit de brondocumenten staan in posten.py. Deze
+module bevat alleen de vergelijking en de drempels; welke post waar uit volgt is
+daar vastgelegd, zodat er een plek is waar dat gewijzigd wordt.
 """
 
 import logging
 import time
-from enum import Enum
 from typing import Optional, List, Tuple, Dict, Any
 from datetime import datetime
 
@@ -27,6 +25,7 @@ from pydantic import BaseModel, Field, ConfigDict
 # importeert.
 from .domain import AuditStatus, RiskLevel
 from .extractor import ExtractedFinancialData
+from .posten import POSTEN, Post
 
 
 logger = logging.getLogger(__name__)
@@ -35,111 +34,6 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # ENUMS
 # ============================================================================
-
-class Aggregation(str, Enum):
-    """Hoe een lijst met bewijsstukken tot een bedrag wordt herleid.
-
-    Expliciet in de mapping vastgelegd in plaats van raden op basis van
-    aanwezige attributen. Dat laatste leidde tot het vergelijken van
-    hypotheekschuld met hypotheekrente.
-    """
-    DIRECT = "direct"                        # enkel getalveld, geen lijst
-    BANK_BALANCE = "bank_balance"            # som van banksaldi
-    WOZ_VALUE = "woz_value"                  # som van WOZ-waarden, naar eigendomsdeel
-    MORTGAGE_DEBT = "mortgage_debt"          # som van restschulden
-    MORTGAGE_INTEREST = "mortgage_interest"  # jaarrente over de restschuld
-
-
-# ============================================================================
-# AG-CODE MAPPING
-# ============================================================================
-# Zie de waarschuwing in de moduledocstring: dit is een projectconventie.
-
-AG_CODE_MAPPING: Dict[str, Dict[str, Any]] = {
-
-    # ---------------- Box 1: inkomen uit werk en woning ----------------
-
-    "AG1010": {
-        "name": "Bruto ondernemingsresultaat",
-        "field": "business_income.gross_income_eur",
-        "aggregation": Aggregation.DIRECT,
-        "description": "Bruto-omzet of loon voor aftrekposten (box 1)",
-        "category": "Inkomen",
-    },
-
-    "AG4010": {
-        "name": "Aftrekbare ondernemingskosten",
-        "field": "business_income.deductible_expenses_eur",
-        "aggregation": Aggregation.DIRECT,
-        "description": "Totaal aan zakelijke kosten dat in aftrek is gebracht",
-        "category": "Aftrekposten",
-    },
-
-    "AG4020": {
-        "name": "Kleinschaligheidsinvesteringsaftrek (KIA)",
-        "field": "kia_profit_eur",
-        "aggregation": Aggregation.DIRECT,
-        "description": "Geclaimde KIA over de investeringen van het boekjaar",
-        "category": "Aftrekposten",
-    },
-
-    "AG5010": {
-        "name": "Aftrekbare hypotheekrente",
-        "field": "mortgages",
-        "aggregation": Aggregation.MORTGAGE_INTEREST,
-        "description": "Betaalde rente eigenwoningschuld (box 1)",
-        "category": "Aftrekposten",
-        # Benadering wanneer het document alleen schuld en rentepercentage geeft;
-        # zie _mortgage_interest voor de berekening en de beperking daarvan.
-        "approximate": True,
-    },
-
-    "AG5020": {
-        "name": "Overige aftrekposten",
-        "field": "deductible_items_eur",
-        "aggregation": Aggregation.DIRECT,
-        "description": "Overige persoonsgebonden aftrek",
-        "category": "Aftrekposten",
-    },
-
-    # ---------------- Box 3: sparen en beleggen ----------------
-
-    "AG3020": {
-        "name": "Bank- en spaarrekeningen",
-        "field": "bank_accounts",
-        "aggregation": Aggregation.BANK_BALANCE,
-        "description": "Saldo van alle rekeningen per 1 januari (box 3)",
-        "category": "Bezittingen",
-    },
-
-    "AG3030": {
-        "name": "Onroerende zaken (niet eigen woning)",
-        "field": "real_estate",
-        "aggregation": Aggregation.WOZ_VALUE,
-        "description": (
-            "WOZ-waarde van tweede woning of verhuurd pand, naar eigendomsdeel "
-            "(box 3). De eigen woning hoort in box 1 en niet onder deze code."
-        ),
-        "category": "Bezittingen",
-    },
-
-    "AG3050": {
-        "name": "Overige bezittingen en beleggingen",
-        "field": "other_assets_eur",
-        "aggregation": Aggregation.DIRECT,
-        "description": "Effecten, obligaties en overige beleggingen (box 3)",
-        "category": "Bezittingen",
-    },
-
-    "AG3060": {
-        "name": "Schulden",
-        "field": "mortgages",
-        "aggregation": Aggregation.MORTGAGE_DEBT,
-        "description": "Restschuld van leningen per 1 januari (box 3)",
-        "category": "Schulden",
-    },
-}
-
 
 # ============================================================================
 # PYDANTIC MODELS
@@ -294,97 +188,6 @@ class AuditMatcher:
     def __init__(self) -> None:
         logger.info("AuditMatcher gestart (zuiver Python, geen AI)")
 
-    # ---------------------- waardebepaling per bewijsstuk ----------------------
-
-    @staticmethod
-    def _woz_value(item: Any) -> float:
-        """WOZ-waarde naar eigendomsdeel.
-
-        Bij gedeeld eigendom hoort alleen het eigen aandeel in de aangifte.
-        De volle WOZ-waarde nemen levert bij 50% eigendom een factor 2 fout op.
-        """
-        waarde = float(getattr(item, "woz_value_eur", 0.0))
-        deel = float(getattr(item, "ownership_pct", 100.0))
-        return waarde * deel / 100.0
-
-    @staticmethod
-    def _mortgage_interest(item: Any) -> float:
-        """Jaarrente over een lening.
-
-        Voorkeur: het bedrag dat de jaaropgave zelf noemt. Ontbreekt dat, dan
-        wordt het benaderd als restschuld maal rentepercentage. Die benadering
-        overschat bij een annuitaire of lineaire lening, omdat de schuld in de
-        loop van het jaar daalt. Daarom wordt de regel als benadering gemarkeerd
-        en niet als harde uitlezing gepresenteerd.
-        """
-        gerapporteerd = getattr(item, "annual_interest_paid_eur", None)
-        if gerapporteerd is not None:
-            return float(gerapporteerd)
-
-        schuld = float(getattr(item, "current_balance_eur", 0.0))
-        percentage = float(getattr(item, "interest_rate_pct", 0.0))
-        return schuld * percentage / 100.0
-
-    def _aggregate(self, items: List[Any], how: Aggregation) -> float:
-        """Herleid een lijst bewijsstukken tot een bedrag."""
-        if how == Aggregation.BANK_BALANCE:
-            return float(sum(getattr(i, "balance_eur", 0.0) for i in items))
-        if how == Aggregation.WOZ_VALUE:
-            return float(sum(self._woz_value(i) for i in items))
-        if how == Aggregation.MORTGAGE_DEBT:
-            return float(sum(getattr(i, "current_balance_eur", 0.0) for i in items))
-        if how == Aggregation.MORTGAGE_INTEREST:
-            return float(sum(self._mortgage_interest(i) for i in items))
-        raise ValueError(f"Aggregatie {how} is niet geldig voor een lijst")
-
-    # ---------------------- veldextractie ----------------------
-
-    def _extract_field_value(
-        self,
-        data: ExtractedFinancialData,
-        field_path: str,
-        how: Aggregation,
-    ) -> Optional[float]:
-        """Herleid het bedrag voor een AG-code uit de uitgelezen data.
-
-        Onderscheidt bewust twee gevallen die eerder allebei op None uitkwamen:
-        een lege lijst betekent geen bewijs (None), een gevulde lijst die op
-        nul uitkomt is wel bewijs van een nulstand (0.0). Dat verschil bepaalt
-        of iets als 'geen bewijs' of als 'sluit aan' op het dashboard komt.
-
-        Returns:
-            Het bedrag, of None als er geen onderbouwing is.
-        """
-        try:
-            current: Any = data
-            for part in field_path.split("."):
-                if current is None or not hasattr(current, part):
-                    logger.debug("Veld niet aanwezig: %s", field_path)
-                    return None
-                current = getattr(current, part)
-
-            if current is None:
-                return None
-
-            if isinstance(current, list):
-                if not current:
-                    return None  # geen enkel bewijsstuk aangetroffen
-                return self._aggregate(current, how)
-
-            # bool is een subtype van int; hier nooit een bedrag
-            if isinstance(current, bool):
-                return None
-
-            if isinstance(current, (int, float)):
-                return float(current)
-
-            logger.debug("Geen bedrag te herleiden uit %s (%s)", field_path, type(current))
-            return None
-
-        except Exception as exc:
-            logger.error("Fout bij uitlezen van %s: %s", field_path, exc)
-            return None
-
     # ---------------------- vergelijking ----------------------
 
     @staticmethod
@@ -424,93 +227,106 @@ class AuditMatcher:
 
         return AuditStatus.MISMATCH
 
-    def match_single_ag_code(
+    def match_single_post(
         self,
-        ag_code: str,
+        post_key: str,
         reported_amount_eur: float,
         extracted_data: ExtractedFinancialData,
     ) -> MatchResult:
-        """Sluit een enkele AG-code aan op de brondocumenten."""
-        try:
-            mapping = AG_CODE_MAPPING.get(ag_code)
+        """Sluit een enkele aangiftepost aan op de brondocumenten.
 
-            if mapping is None:
+        De herleiding uit de documenten komt uit posten.py. Die stond hier
+        eerder ook, met een eigen AG-codetabel; twee plekken met dezelfde
+        logica liepen uit elkaar zodra er een post bij kwam.
+        """
+        try:
+            post: Optional[Post] = POSTEN.get(post_key)
+
+            if post is None:
                 return MatchResult(
-                    ag_code=ag_code,
-                    ag_name="Onbekende code",
+                    ag_code=post_key,
+                    ag_name="Onbekende post",
                     reported_amount_eur=float(reported_amount_eur),
                     status=AuditStatus.ERROR,
                     confidence=0.0,
-                    notes=f"AG-code {ag_code} staat niet in de codetabel",
+                    notes=(
+                        f"Post {post_key!r} staat niet in de postentabel en is "
+                        "niet gecontroleerd. Vul src/posten.py aan."
+                    ),
                 )
 
-            extracted_value = self._extract_field_value(
-                extracted_data, mapping["field"], mapping["aggregation"]
-            )
+            try:
+                uit_documenten = post.herleiden(extracted_data)
+            except Exception as exc:
+                logger.error("Herleiden van %s mislukt: %s", post_key, exc)
+                uit_documenten = None
 
-            if extracted_value is None:
+            if uit_documenten is None:
                 return MatchResult(
-                    ag_code=ag_code,
-                    ag_name=mapping["name"],
-                    category=mapping.get("category", ""),
+                    ag_code=post_key,
+                    ag_name=post.naam,
+                    category=post.soort.label,
                     reported_amount_eur=float(reported_amount_eur),
                     extracted_amount_eur=None,
                     difference_eur=None,
                     status=AuditStatus.MISSING_PROOF,
                     confidence=0.0,
                     notes=(
-                        f"Geen onderbouwing gevonden voor {mapping['name'].lower()}. "
-                        "Upload het bijbehorende brondocument."
+                        f"Geen onderbouwing gevonden voor {post.naam.lower()}. "
+                        "Het bijbehorende stuk ontbreekt in het dossier."
                     ),
                 )
 
             verschil, percentage = self._calculate_difference(
-                float(reported_amount_eur), extracted_value
+                float(reported_amount_eur), uit_documenten
             )
             status = self._determine_status(verschil, percentage)
-            benadering = bool(mapping.get("approximate", False))
 
-            toelichting = mapping["description"]
-            if benadering and status != AuditStatus.MATCH:
+            toelichting = post.toelichting
+            if post.is_benadering and status != AuditStatus.MATCH:
                 toelichting += (
-                    " Let op: het herleide bedrag is een benadering op basis van "
-                    "restschuld en rentepercentage. Controleer de jaaropgave."
+                    " Let op: het bedrag uit de stukken is een benadering. "
+                    "Controleer de jaaropgave."
                 )
 
             result = MatchResult(
-                ag_code=ag_code,
-                ag_name=mapping["name"],
-                category=mapping.get("category", ""),
+                ag_code=post_key,
+                ag_name=post.naam,
+                category=post.soort.label,
                 reported_amount_eur=float(reported_amount_eur),
-                extracted_amount_eur=extracted_value,
+                extracted_amount_eur=uit_documenten,
                 difference_eur=verschil,
                 difference_pct=percentage,
                 status=status,
-                confidence=0.70 if benadering else (0.95 if status == AuditStatus.MATCH else 0.85),
-                is_approximate=benadering,
+                confidence=(
+                    0.70 if post.is_benadering
+                    else (0.95 if status == AuditStatus.MATCH else 0.85)
+                ),
+                is_approximate=post.is_benadering,
                 notes=toelichting,
             )
 
             logger.info(
-                "%s: %s (aangegeven EUR %s, herleid EUR %s, verschil EUR %s)",
-                ag_code,
-                status.value,
-                f"{reported_amount_eur:,.2f}",
-                f"{extracted_value:,.2f}",
+                "%s: %s (aangifte EUR %s, stukken EUR %s, verschil EUR %s)",
+                post_key, status.value,
+                f"{reported_amount_eur:,.2f}", f"{uit_documenten:,.2f}",
                 f"{verschil:,.2f}",
             )
             return result
 
         except Exception as exc:
-            logger.error("Fout bij aansluiten van %s: %s", ag_code, exc)
+            logger.error("Aansluiten van %s mislukt: %s", post_key, exc)
             return MatchResult(
-                ag_code=ag_code,
+                ag_code=post_key,
                 ag_name="Fout",
                 reported_amount_eur=float(reported_amount_eur),
                 status=AuditStatus.ERROR,
                 confidence=0.0,
                 notes=f"Onverwachte fout tijdens de aansluiting: {exc}",
             )
+
+    # Oude naam, zodat bestaande aanroepen blijven werken.
+    match_single_ag_code = match_single_post
 
     def match_ag_codes(
         self,
@@ -522,8 +338,8 @@ class AuditMatcher:
         logger.info("Start aansluiting voor %d AG-codes", len(reported_amounts))
 
         results = [
-            self.match_single_ag_code(code, amount, extracted_data)
-            for code, amount in reported_amounts.items()
+            self.match_single_post(post_key, amount, extracted_data)
+            for post_key, amount in reported_amounts.items()
         ]
 
         # Alleen regels met een daadwerkelijk verschil tellen mee in de bedragen.

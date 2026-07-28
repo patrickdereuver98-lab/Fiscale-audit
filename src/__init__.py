@@ -7,6 +7,7 @@ Laagindeling, van binnen naar buiten:
     peildatum.py     periodecontrole per documentsoort
     triggers.py      wanneer is een volledige fiscale toets nodig
     posten.py        aangifteposten, gemapt op de labels uit het rapport
+    aangifte_lezer   het aangifterapport uitlezen (docx zonder model)
     fiscale_kern.py  tarieven en drempels per jaar, met verificatiestatus
     omissions.py     wat in de bron staat en niet in de aangifte
     llm_json.py      JSON uit een modelantwoord halen
@@ -60,6 +61,9 @@ _LAZY = {
     "DataAnonymizer": "anonymizer",
     "DocumentExtractor": "extractor",
     "ExtractedFinancialData": "extractor",
+    "Aangifte": "aangifte_lezer",
+    "lees_aangifte_docx": "aangifte_lezer",
+    "koppel_aan_posten": "aangifte_lezer",
     "check_omissies": "omissions",
     "check_omissies_op_labels": "omissions",
     "Omissie": "omissions",
@@ -67,7 +71,6 @@ _LAZY = {
     "AuditMatcher": "matcher",
     "MatchResult": "matcher",
     "AuditSummary": "matcher",
-    "AG_CODE_MAPPING": "matcher",
     "FiscalAdvisor": "advisor",
     "RiskAssessment": "advisor",
     "RiskPoint": "advisor",
@@ -79,7 +82,7 @@ _LAZY = {
 if TYPE_CHECKING:  # alleen voor typecheckers, niet bij het uitvoeren
     from .anonymizer import DataAnonymizer
     from .extractor import DocumentExtractor, ExtractedFinancialData
-    from .matcher import AuditMatcher, MatchResult, AuditSummary, AG_CODE_MAPPING
+    from .matcher import AuditMatcher, MatchResult, AuditSummary
     from .advisor import (
         FiscalAdvisor, RiskAssessment, RiskPoint,
         build_client_email, build_document_request_email,

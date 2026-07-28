@@ -80,10 +80,10 @@ data = ExtractedFinancialData(
                             annual_interest_paid_eur=9300.0)],
 )
 resultaten, samenvatting = AuditMatcher().match_ag_codes(data, {
-    "AG3020": 52000.0,     # sluit aan
-    "AG5010": 9300.0,      # sluit aan
-    "AG3060": 250000.0,    # afwijking van 60.000
-    "AG3050": 25000.0,     # geen bewijs
+    "bank_spaartegoeden": 52000.0,     # sluit aan
+    "hypotheekrente": 9300.0,      # sluit aan
+    "schulden_box3": 250000.0,    # afwijking van 60.000
+    "overige_bezittingen": 25000.0,     # geen bewijs
 })
 
 GOED_ANTWOORD = """{
@@ -91,7 +91,7 @@ GOED_ANTWOORD = """{
   "risico_punten": [
     {"titel": "Restschuld wijkt af", "beschrijving": "De aangegeven schuld is lager.",
      "impact": "HIGH", "aanbevolen_actie": "Jaaropgave hypotheek opvragen.",
-     "ag_codes": ["AG3060"], "referentie": "Wet IB 2001 artikel 5.3"}
+     "ag_codes": ["schulden_box3"], "referentie": "Wet IB 2001 artikel 5.3"}
   ],
   "sterke_punten": ["Banksaldo en rente sluiten aan"],
   "waarschuwingen": ["Slechts een document beoordeeld"],
@@ -113,10 +113,10 @@ beoordeling = advisor.analyze_audit(
 )
 opgave = _NagebootsteAnthropic.laatste_opgave
 
-check("de opgave benoemt de afwijkende post", "AG3060" in opgave)
-check("de opgave benoemt de post zonder bewijs", "AG3050" in opgave)
+check("de opgave benoemt de afwijkende post", "schulden_box3" in opgave)
+check("de opgave benoemt de post zonder bewijs", "overige_bezittingen" in opgave)
 check("aansluitende codes staan alleen samengevat",
-      opgave.count("AG3020") == 1 and "SLUITEN AAN" in opgave)
+      opgave.count("bank_spaartegoeden") == 1 and "SLUITEN AAN" in opgave)
 check("bruto en netto worden onderscheiden",
       "bruto afwijking" in opgave and "saldo-effect" in opgave)
 check("geen rekeningnummer in de opgave",
@@ -228,7 +228,7 @@ schoon_data = ExtractedFinancialData(
     bank_accounts=[BankBalance(account_number="NL99BANK0000000000",
                                bank_name="ING", balance_eur=1000.0)],
 )
-schoon_res, schoon_sam = AuditMatcher().match_ag_codes(schoon_data, {"AG3020": 1000.0})
+schoon_res, schoon_sam = AuditMatcher().match_ag_codes(schoon_data, {"bank_spaartegoeden": 1000.0})
 _NagebootsteAnthropic.antwoord = '{"overall_risk": "LOW", "risico_punten": []}'
 schoon = FiscalAdvisor(api_key="test").analyze_audit(
     results=schoon_res, summary=schoon_sam, klant_naam="Pietersen", aangiftejaar=2024)
