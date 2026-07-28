@@ -5,7 +5,11 @@
 -- ENUMS & TYPES
 -- ============================================================================
 
-CREATE TYPE audit_status AS ENUM ('MATCH', 'MISMATCH', 'MISSING_PROOF', 'ERROR');
+-- MINOR_VARIANCE en PENDING ontbraken; een insert met die status werd door
+-- Postgres geweigerd met een enum-schending.
+CREATE TYPE audit_status AS ENUM (
+    'MATCH', 'MINOR_VARIANCE', 'MISMATCH', 'MISSING_PROOF', 'ERROR', 'PENDING'
+);
 
 CREATE TYPE risk_level AS ENUM ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL');
 
@@ -41,10 +45,7 @@ CREATE TABLE IF NOT EXISTS audit_results (
     opmerking TEXT,
     document_ref TEXT, -- reference naar source document
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
-    INDEX idx_dossier_id (dossier_id),
-    INDEX idx_ag_code (ag_code),
-    INDEX idx_status (status)
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
 -- Fiscal Notes: Risico-analyses en advies per dossier
@@ -57,9 +58,7 @@ CREATE TABLE IF NOT EXISTS fiscal_notes (
     klant_mail_concept TEXT, -- Kant-en-klaar emailconcept
     advisor_notes TEXT, -- Interne notities
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
-    INDEX idx_dossier_id (dossier_id),
-    INDEX idx_risk_level (risk_level)
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
 -- Document Metadata: Info over geüploade PDF's
@@ -70,9 +69,7 @@ CREATE TABLE IF NOT EXISTS uploaded_documents (
     document_type TEXT, -- 'WOZ_Beschikking', 'Bank_Jaaroverzicht', etc.
     extracted_data JSONB, -- Geëxtraheerde gegevens (anoniem)
     pagina_count INTEGER,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
-    INDEX idx_dossier_id (dossier_id),
-    INDEX idx_document_type (document_type)
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
 -- Audit Log: Voor compliance tracking
@@ -83,19 +80,32 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     user_info TEXT,
     ip_address TEXT,
     details JSONB,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
-    INDEX idx_dossier_id (dossier_id),
-    INDEX idx_created_at (created_at)
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
 -- ============================================================================
 -- INDEXES & PERFORMANCE
 -- ============================================================================
 
-CREATE INDEX idx_dossiers_jaar ON dossiers(aangiftejaar);
-CREATE INDEX idx_dossiers_status ON dossiers(status);
-CREATE INDEX idx_dossiers_created ON dossiers(created_at DESC);
-CREATE INDEX idx_audit_results_dossier_status ON audit_results(dossier_id, status);
+-- Indexnamen zijn in PostgreSQL schemabreed uniek, dus met tabelprefix.
+CREATE INDEX IF NOT EXISTS idx_dossiers_jaar ON dossiers(aangiftejaar);
+CREATE INDEX IF NOT EXISTS idx_dossiers_status ON dossiers(status);
+CREATE INDEX IF NOT EXISTS idx_dossiers_created ON dossiers(created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_audit_results_dossier ON audit_results(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_audit_results_ag_code ON audit_results(ag_code);
+CREATE INDEX IF NOT EXISTS idx_audit_results_status ON audit_results(status);
+CREATE INDEX IF NOT EXISTS idx_audit_results_dossier_status
+    ON audit_results(dossier_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_fiscal_notes_dossier ON fiscal_notes(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_fiscal_notes_risk ON fiscal_notes(risk_level);
+
+CREATE INDEX IF NOT EXISTS idx_documents_dossier ON uploaded_documents(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_documents_type ON uploaded_documents(document_type);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_dossier ON audit_logs(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
 
 -- ============================================================================
 -- ROW LEVEL SECURITY (RLS) - Voorlopig uitgeschakeld voor development
@@ -123,10 +133,18 @@ SELECT
     d.klant_naam,
     d.aangiftejaar,
     COUNT(CASE WHEN ar.status = 'MATCH' THEN 1 END) as matches_count,
+    COUNT(CASE WHEN ar.status = 'MINOR_VARIANCE' THEN 1 END) as minor_variance_count,
     COUNT(CASE WHEN ar.status = 'MISMATCH' THEN 1 END) as mismatches_count,
     COUNT(CASE WHEN ar.status = 'MISSING_PROOF' THEN 1 END) as missing_proof_count,
     COUNT(CASE WHEN ar.status = 'ERROR' THEN 1 END) as error_count,
-    SUM(CASE WHEN ar.status = 'MISMATCH' THEN ar.verschil ELSE 0 END) as total_verschil,
+    -- ABS: zonder absolute waarde heffen een te hoge en een te lage post elkaar
+    -- op en toont het dashboard 0 terwijl er twee afwijkingen zijn.
+    COALESCE(SUM(CASE WHEN ar.status = 'MISMATCH'
+                      THEN ABS(ar.verschil) ELSE 0 END), 0) as bruto_verschil,
+    COALESCE(SUM(CASE WHEN ar.status = 'MISMATCH'
+                      THEN ar.verschil ELSE 0 END), 0) as netto_verschil,
+    COALESCE(SUM(CASE WHEN ar.status = 'MISSING_PROOF'
+                      THEN ar.bedrag_aangifte ELSE 0 END), 0) as niet_verifieerbaar,
     fn.risk_level,
     d.created_at,
     d.updated_at

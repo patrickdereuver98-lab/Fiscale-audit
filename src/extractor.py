@@ -59,8 +59,12 @@ class BankBalance(BaseModel):
     )
     balance_eur: float = Field(
         ...,
-        gt=0,
-        description="Account balance in EUR (must be positive)"
+        description=(
+            "Account balance in EUR. No lower bound: a balance of 0.00 is normal "
+            "for an emptied savings account, and a negative balance means the "
+            "account is overdrawn (rood staan). A gt=0 constraint here rejected "
+            "both cases and failed the entire extraction."
+        ),
     )
     currency: str = Field(
         default="EUR",
@@ -72,10 +76,11 @@ class BankBalance(BaseModel):
     @classmethod
     def validate_balance(cls, v: float) -> float:
         """Round balance to 2 decimals and check reasonableness."""
-        if v > 1e10:  # > €10 billion is unrealistic
-            raise ValueError(f"Balance exceeds maximum reasonable value: €{v:,.2f}")
-        if v < 0.01:
-            raise ValueError("Balance must be at least €0.01")
+        if abs(v) > 1e10:  # > EUR 10 billion is unrealistic either way
+            raise ValueError(f"Balance exceeds maximum reasonable value: EUR {v:,.2f}")
+        # No lower bound. A zero balance is a normal emptied savings account and
+        # a negative balance means overdrawn; rejecting either failed the whole
+        # extraction on otherwise perfectly readable statements.
         return round(v, 2)
 
 
@@ -99,8 +104,25 @@ class MortgageInfo(BaseModel):
     principal_eur: float = Field(..., gt=0, description="Original loan amount")
     current_balance_eur: float = Field(..., ge=0, description="Current outstanding balance")
     interest_rate_pct: float = Field(..., ge=0, le=20, description="Annual interest rate (0-20%)")
-    monthly_payment_eur: float = Field(..., gt=0, description="Monthly payment amount")
+    monthly_payment_eur: float = Field(
+        ...,
+        ge=0,
+        description=(
+            "Monthly payment. Zero is possible during a payment holiday or "
+            "when the loan is settled annually."
+        ),
+    )
     loan_type: str = Field(default="hypotheek", description="Type of loan (hypotheek, persoonlijk, etc.)")
+    annual_interest_paid_eur: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Interest actually paid during the year, as stated on the annual "
+            "mortgage statement (jaaropgave). Left as None when the document "
+            "does not state it; the matcher then approximates from balance and "
+            "rate, which overstates for annuity loans."
+        ),
+    )
 
     @field_validator('current_balance_eur')
     @classmethod
@@ -132,7 +154,14 @@ class BusinessIncome(BaseModel):
         }
     )
     
-    gross_income_eur: float = Field(..., gt=0, description="Total business income")
+    gross_income_eur: float = Field(
+        ...,
+        ge=0,
+        description=(
+            "Total business income. Zero is valid for a dormant entity; a "
+            "gt=0 constraint rejected those annual statements outright."
+        ),
+    )
     deductible_expenses_eur: float = Field(..., ge=0, description="Deductible business expenses")
     net_profit_eur: float = Field(..., description="Net profit after deductions")
 
@@ -225,19 +254,23 @@ class ExtractedFinancialData(BaseModel):
         default_factory=list,
         description="All real estate properties found"
     )
-    other_assets_eur: float = Field(
-        default=0,
+    # None means "the document does not substantiate this figure", which the
+    # matcher reports as MISSING_PROOF. 0.0 means "substantiated as nil".
+    # Collapsing the two into a default of 0 hid missing source documents.
+    other_assets_eur: Optional[float] = Field(
+        default=None,
         ge=0,
-        description="Other assets/investments value"
+        description="Other assets/investments value; None if not in the document"
     )
-    deductible_items_eur: float = Field(
-        default=0,
+    deductible_items_eur: Optional[float] = Field(
+        default=None,
         ge=0,
-        description="Tax deductible items"
+        description="Tax deductible items; None if not in the document"
     )
-    kia_profit_eur: float = Field(
-        default=0,
-        description="KIA profit (young entrepreneur deduction)"
+    kia_profit_eur: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Claimed KIA deduction; None if not in the document"
     )
     document_type: str = Field(
         default="unknown",
@@ -394,9 +427,27 @@ class DocumentExtractor:
         Raises:
             RuntimeError: If all retries fail
         """
-        system_prompt = """You are an expert financial document analyzer. Extract financial data from the PDF.
+        system_prompt = """You extract financial data from DUTCH tax and financial documents
+(WOZ-beschikking, bankjaaropgave, hypotheek jaaropgave, jaarrekening, aangifte).
 
 CRITICAL: RESPOND WITH ONLY VALID JSON. NO MARKDOWN, NO EXPLANATIONS, NO TEXT.
+
+DUTCH NUMBER FORMAT - THIS IS THE MOST COMMON SOURCE OF ERRORS:
+Dutch documents use a period as thousands separator and a comma as decimal
+separator, the opposite of English. You must convert to JSON floats.
+    "EUR 250.000,00"  -> 250000.00      (NOT 250.0)
+    "EUR 1.234,56"    -> 1234.56        (NOT 1.23456)
+    "EUR 8.500"       -> 8500.00        (NOT 8.5)
+    "EUR 0,00"        -> 0.00
+Negative amounts may appear as "1.000,00-" or "(1.000,00)" or "-1.000,00";
+all three mean -1000.00. A credit balance on a debt is not negative.
+
+MISSING VERSUS ZERO - DO NOT CONFUSE THESE:
+    Document does not mention the item at all -> null
+    Document explicitly states a zero amount  -> 0.0
+This distinction matters: null means "not substantiated, needs a source
+document", while 0.0 means "substantiated as nil". Never write 0.0 to fill a
+gap, and never write null for an amount the document actually states as zero.
 
 Your response must be valid JSON with this exact structure:
 {
@@ -415,7 +466,8 @@ Your response must be valid JSON with this exact structure:
             "current_balance_eur": 250000.0,
             "interest_rate_pct": 2.5,
             "monthly_payment_eur": 1200.0,
-            "loan_type": "hypotheek"
+            "loan_type": "hypotheek",
+            "annual_interest_paid_eur": 6250.0
         }
     ],
     "business_income": null,
@@ -427,19 +479,37 @@ Your response must be valid JSON with this exact structure:
             "ownership_pct": 100.0
         }
     ],
-    "other_assets_eur": 0.0,
+    "other_assets_eur": null,
     "deductible_items_eur": 5000.0,
-    "kia_profit_eur": 0.0,
-    "document_type": "bank_statement"
+    "kia_profit_eur": null,
+    "document_type": "bankjaaropgave"
 }
 
+FIELD NOTES:
+- annual_interest_paid_eur: the interest ACTUALLY PAID during the year, as
+  stated on the jaaropgave (often labelled "betaalde rente",
+  "rente hypothecaire lening" or "renteaftrek"). This is NOT the outstanding
+  balance and NOT the monthly payment. Use null if the document does not state
+  a paid-interest figure. Do not compute it yourself.
+- current_balance_eur: outstanding debt ("restschuld", "saldo per 31-12").
+- balance_eur: account balance. For box 3 the reference date (peildatum) is
+  1 January, which equals the 31 December balance of the preceding year.
+- woz_value_eur: the WOZ value ("vastgestelde waarde") from the beschikking.
+- ownership_pct: share of ownership. If the beschikking lists two owners or
+  says "50% eigendom", use 50.0. Default to 100.0 only when the document gives
+  no indication of shared ownership.
+- year_valued: the "waardepeildatum" year, not the year the letter was sent.
+- document_type: one of WOZ_beschikking, bankjaaropgave, hypotheek_jaaropgave,
+  jaarrekening, aangifte, overig.
+
 RULES:
-1. ALL numbers must be floats/integers (not strings)
-2. Dates must be YYYY-MM-DD format
-3. Currency is ALWAYS EUR
-4. If data not found: use 0 for amounts, empty [] for lists, null for objects
-5. confidence must be 0-1
-6. ownership_pct must be 1-100
+1. All amounts are JSON numbers, never strings, never with separators
+2. Currency is always EUR; convert other currencies and lower the confidence
+3. Lists are [] only when the document type could contain such items but has none
+4. extraction_confidence is 0-1 and reflects legibility and completeness;
+   use below 0.7 for scans that are partly unreadable
+5. ownership_pct is 1-100
+6. Never invent a figure that is not in the document
 """
 
         for attempt in range(self.MAX_RETRIES):

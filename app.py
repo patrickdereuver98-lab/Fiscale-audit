@@ -1,16 +1,15 @@
 """
-FiscAudit AI - Executive Fiscal Dashboard (PROFESSIONALLY REDESIGNED)
+FiscAudit AI - Geautomatiseerde fiscale aansluitcontrole
 
-Modern, elegant dashboard for automated fiscal audits of Dutch tax returns.
-Built with professional design system and reusable UI components.
+Leest brondocumenten uit met Gemini, sluit de aangegeven AG-codes zuiver in
+Python aan op die documenten, en laat Claude de inhoudelijke risico's wegen.
 
-Features:
-  • Professional executive dashboard design
-  • Drag-and-drop PDF upload
-  • Real-time audit matching
-  • Risk analysis with Claude AI
-  • Professional export & communication
-  • GDPR/AVG compliant
+Opzet van het dashboard: wat aansluit hoeft geen aandacht. De interface zet
+daarom de afwijkingen en de posten zonder onderbouwing bovenaan, en houdt de
+regels die kloppen samengevouwen.
+
+Voertaal van de interface is Nederlands. Identifiers en docstrings zijn Engels,
+conform de rest van de codebase.
 """
 
 import os
@@ -22,637 +21,746 @@ from typing import Optional, Tuple, List, Dict, Any
 
 import streamlit as st
 
-# Import FiscAudit modules
 try:
     from src.anonymizer import DataAnonymizer
     from src.extractor import DocumentExtractor, ExtractedFinancialData
-    from src.matcher import AuditMatcher, MatchResult, AuditSummary
-    from src.advisor import FiscalAdvisor, RiskAssessment
+    from src.matcher import (
+        AuditMatcher, MatchResult, AuditSummary, AuditStatus, AG_CODE_MAPPING,
+    )
+    from src.advisor import FiscalAdvisor
     from src.db import SupabaseClient
     from src.ui_components import (
-        metric_card, metric_row,
-        status_badge, status_indicator,
-        section_container, info_box,
-        divider, spacer,
-        audit_results_table, audit_summary_cards,
-        copyable_text_area, code_block,
-        upload_pdf_section, ag_codes_input,
-        risk_level_indicator, export_buttons,
-        progress_step, sidebar_header, sidebar_section,
-        format_currency, format_percentage
+        metric_card, metric_row, audit_summary_cards, audit_results_table,
+        status_label, status_badge, risk_level_indicator,
+        info_box, divider, spacer, progress_step,
+        upload_pdf_section, copyable_text_area, export_buttons,
+        format_currency, format_percentage, format_count,
     )
-except ImportError as e:
-    st.error(f"❌ Failed to import FiscAudit modules: {str(e)}")
+except ImportError as exc:
+    st.error(f"Modules konden niet worden geladen: {exc}")
     st.stop()
 
 
-# ============================================================================
-# LOGGING SETUP
-# ============================================================================
-
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# CSS LOADING
+# OPMAAK
 # ============================================================================
 
 def load_css() -> None:
-    """Load external CSS stylesheet for professional styling."""
-    css_path = os.path.join(os.path.dirname(__file__), "assets", "style.css")
-    
+    """Laad het externe stijlblad."""
+    pad = os.path.join(os.path.dirname(__file__), "assets", "style.css")
     try:
-        with open(css_path, "r", encoding="utf-8") as f:
-            css_content = f.read()
-        st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
-        logger.info("CSS stylesheet loaded successfully")
+        with open(pad, "r", encoding="utf-8") as bestand:
+            st.markdown(f"<style>{bestand.read()}</style>", unsafe_allow_html=True)
     except FileNotFoundError:
-        logger.warning(f"CSS file not found at {css_path}")
-    except Exception as e:
-        logger.error(f"Error loading CSS: {str(e)}")
+        logger.warning("Stijlblad niet gevonden op %s", pad)
+    except Exception as exc:
+        logger.error("Stijlblad laden mislukt: %s", exc)
 
-
-# ============================================================================
-# PAGE CONFIGURATION
-# ============================================================================
 
 st.set_page_config(
-    page_title="FiscAudit AI - Fiscal Audit Platform",
+    page_title="FiscAudit AI",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
-    menu_items=None
 )
-
-# Load CSS styling
 load_css()
 
 
 # ============================================================================
-# SESSION STATE INITIALIZATION
+# SESSIESTATUS
 # ============================================================================
 
-def init_session_state():
-    """Initialize Streamlit session state variables."""
-    defaults = {
-        'uploaded_file': None,
-        'extracted_data': None,
-        'ag_codes': {},
-        'audit_results': None,
-        'audit_summary': None,
-        'risk_assessment': None,
-        'dossier_id': None,
-        'anonymized_data': None,
-        'audit_in_progress': False,
-        'current_step': 'upload',
-        'klant_naam': 'New Client',
-        'jaar': 2024,
+def init_session_state() -> None:
+    """Zet de sessievariabelen klaar."""
+    standaard: Dict[str, Any] = {
+        "extracted_data": None,
+        "documentnaam": None,
+        "ag_codes": {},
+        "audit_results": None,
+        "audit_summary": None,
+        "risk_assessment": None,
+        "anonymization_report": None,
+        "klant_naam": "",
+        "aangiftejaar": datetime.now().year - 1,
     }
-    
-    for key, default_value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = default_value
+    for sleutel, waarde in standaard.items():
+        if sleutel not in st.session_state:
+            st.session_state[sleutel] = waarde
 
 
 init_session_state()
 
 
 # ============================================================================
-# UTILITY FUNCTIONS
+# CLIENTS
 # ============================================================================
 
-def log_audit_action(action: str, status: str, details: str = ""):
-    """Log audit action for compliance trail."""
-    logger.info(f"[AUDIT] {action} | {status} | {details}")
-
-
 def get_secret(*names: str) -> Optional[str]:
-    """Look up a secret, tolerating different naming conventions.
+    """Zoek een sleutel op, ongeacht de schrijfwijze.
 
-    Checks st.secrets first, then environment variables (for Docker).
-    Matching is case-insensitive, so GEMINI_API_KEY, gemini_api_key and
-    Gemini_Api_Key all resolve to the same value.
-
-    Args:
-        *names: Accepted aliases for the secret, in order of preference.
-
-    Returns:
-        The first non-empty value found, or None.
+    Kijkt eerst in st.secrets en daarna in de omgevingsvariabelen, zodat zowel
+    Streamlit Cloud als een Docker-container werkt. De vergelijking negeert
+    hoofdletters, dus GEMINI_API_KEY en gemini_api_key komen op hetzelfde uit.
     """
     try:
-        secrets_lower = {str(k).lower(): v for k, v in st.secrets.items()}
+        uit_secrets = {str(k).lower(): v for k, v in st.secrets.items()}
     except Exception:
-        secrets_lower = {}
+        uit_secrets = {}
+    uit_omgeving = {k.lower(): v for k, v in os.environ.items()}
 
-    env_lower = {k.lower(): v for k, v in os.environ.items()}
-
-    for name in names:
-        key = name.lower()
-        value = secrets_lower.get(key) or env_lower.get(key)
-        if value:
-            return str(value).strip()
+    for naam in names:
+        waarde = uit_secrets.get(naam.lower()) or uit_omgeving.get(naam.lower())
+        if waarde:
+            return str(waarde).strip()
     return None
 
 
-def initialize_clients() -> Tuple[Optional[DocumentExtractor], Optional[AuditMatcher], 
-                                  Optional[FiscalAdvisor], Optional[SupabaseClient]]:
-    """Initialize all API clients with error handling."""
-    try:
-        google_key = get_secret(
-            "google_api_key", "GEMINI_API_KEY", "gemini_api_key", "GOOGLE_API_KEY"
-        )
-        claude_key = get_secret(
-            "anthropic_api_key", "Claude_api_key", "claude_api_key", "ANTHROPIC_API_KEY"
-        )
-        supabase_url = get_secret("supabase_url", "SUPABASE_URL")
-        supabase_key = get_secret(
-            "supabase_key", "SUPABASE_KEY", "supabase_anon_key", "SUPABASE_ANON_KEY"
-        )
-        
-        # Extractor
-        if not google_key:
-            st.warning("⚠️ Google API key not found in secrets")
-            extractor = None
-        else:
-            extractor = DocumentExtractor(api_key=google_key)
-        
-        # Matcher
-        matcher = AuditMatcher()
-        
-        # Advisor
-        if not claude_key:
-            st.warning("⚠️ Claude API key not found - risk analysis unavailable")
-            advisor = None
-        else:
-            advisor = FiscalAdvisor(api_key=claude_key)
-        
-        # Database
-        if not supabase_url or not supabase_key:
-            st.info("ℹ️ Supabase not configured - data won't be persisted")
-            db = None
-        else:
-            db = SupabaseClient(url=supabase_url, key=supabase_key)
-        
-        return extractor, matcher, advisor, db
-        
-    except Exception as e:
-        st.error(f"❌ Error initializing clients: {str(e)}")
-        return None, None, None, None
+@st.cache_resource(show_spinner=False)
+def get_extractor(api_key: str) -> DocumentExtractor:
+    """Documentlezer, hergebruikt over herruns heen."""
+    return DocumentExtractor(api_key=api_key)
+
+
+@st.cache_resource(show_spinner=False)
+def get_advisor(api_key: str) -> FiscalAdvisor:
+    """Fiscaal adviseur, hergebruikt over herruns heen."""
+    return FiscalAdvisor(api_key=api_key)
+
+
+@st.cache_resource(show_spinner=False)
+def get_database(url: str, key: str) -> SupabaseClient:
+    """Databaseverbinding, hergebruikt over herruns heen."""
+    return SupabaseClient(url=url, key=key)
+
+
+def gemini_key() -> Optional[str]:
+    return get_secret("google_api_key", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+
+
+def claude_key() -> Optional[str]:
+    return get_secret("anthropic_api_key", "Claude_api_key", "ANTHROPIC_API_KEY")
+
+
+def log_actie(actie: str, status: str, details: str = "") -> None:
+    """Schrijf een regel naar het controlespoor."""
+    logger.info("[CONTROLESPOOR] %s | %s | %s", actie, status, details)
 
 
 # ============================================================================
-# SIDEBAR: DOSSIER MANAGEMENT
+# ZIJBALK
 # ============================================================================
 
-def render_sidebar():
-    """Render sidebar with dossier management."""
+def render_sidebar() -> None:
+    """Dossiergegevens en de status van de koppelingen."""
     with st.sidebar:
-        # Header
-        st.markdown("### 📁 Dossier Management")
-        
-        # Dossier inputs
-        col1, col2 = st.columns(2)
-        with col1:
-            klant_naam = st.text_input(
-                "Client Name",
-                value=st.session_state['klant_naam'],
-                placeholder="Jan Jansen",
-                key="klant_input"
+        st.markdown("### Dossier")
+
+        st.session_state["klant_naam"] = st.text_input(
+            "Naam klant",
+            value=st.session_state["klant_naam"],
+            placeholder="bijv. Jansen Holding BV",
+        )
+        st.session_state["aangiftejaar"] = st.number_input(
+            "Aangiftejaar",
+            value=int(st.session_state["aangiftejaar"]),
+            min_value=2015,
+            max_value=datetime.now().year,
+            step=1,
+        )
+
+        divider(12)
+        st.markdown("### Voortgang")
+
+        stappen = [
+            ("Document uitgelezen", st.session_state["extracted_data"] is not None),
+            ("AG-codes ingevoerd", bool(st.session_state["ag_codes"])),
+            ("Aansluiting uitgevoerd", st.session_state["audit_results"] is not None),
+            ("Advies opgesteld", st.session_state["risk_assessment"] is not None),
+        ]
+        for tekst, gereed in stappen:
+            st.markdown(f"{'✅' if gereed else '⬜'} {tekst}")
+
+        divider(12)
+        st.markdown("### Koppelingen")
+
+        koppelingen = [
+            ("Gemini (documenten)", bool(gemini_key()), "verplicht"),
+            ("Claude (advies)", bool(claude_key()), "optioneel"),
+            (
+                "Supabase (opslag)",
+                bool(get_secret("supabase_url", "SUPABASE_URL")
+                     and get_secret("supabase_key", "SUPABASE_KEY")),
+                "optioneel",
+            ),
+        ]
+        for naam, actief, soort in koppelingen:
+            teken = "🟢" if actief else ("🔴" if soort == "verplicht" else "⚪")
+            st.markdown(
+                f"{teken} {naam}"
+                + ("" if actief else f" <span style='color:#94A3B8'>({soort})</span>"),
+                unsafe_allow_html=True,
             )
-        with col2:
-            jaar = st.number_input(
-                "Tax Year",
-                value=st.session_state['jaar'],
-                min_value=2000,
-                max_value=2030,
-                key="jaar_input"
+
+        if not gemini_key():
+            st.caption(
+                "Zonder Gemini-sleutel kan er geen document worden uitgelezen. "
+                "Zet de sleutel in de instellingen onder Secrets."
             )
-        
-        st.session_state['klant_naam'] = klant_naam
-        st.session_state['jaar'] = jaar
-        
-        # Create dossier button
-        if st.button("➕ Create New Dossier", use_container_width=True, type="primary"):
-            if klant_naam:
-                st.success(f"✅ Dossier: {klant_naam} ({jaar})")
-                log_audit_action("CREATE_DOSSIER", "SUCCESS", f"{klant_naam}-{jaar}")
-            else:
-                st.warning("Enter client name")
-        
-        # Current dossier display
-        if st.session_state['dossier_id']:
-            st.info(f"Current: {st.session_state['dossier_id']}")
-        
-        divider()
-        
-        # Statistics
-        st.markdown("### 📈 Session Statistics")
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("AG-Codes", len(st.session_state.get('ag_codes', {})) or "-")
-        with col2:
-            if st.session_state.get('audit_summary'):
-                st.metric("Matched", st.session_state['audit_summary'].matched)
-            else:
-                st.metric("Matched", "-")
-        with col3:
-            if st.session_state.get('audit_summary'):
-                st.metric("Risk", st.session_state['audit_summary'].overall_risk_level.value)
-            else:
-                st.metric("Risk", "-")
+
+        if st.session_state["anonymization_report"]:
+            divider(12)
+            st.markdown("### Privacy")
+            st.caption(
+                "Persoonsgegevens zijn gemaskeerd voordat het document naar een "
+                "extern model ging."
+            )
+            st.json(st.session_state["anonymization_report"])
 
 
 # ============================================================================
-# TAB 1: UPLOAD & INPUT
+# TAB 1 - INVOER
 # ============================================================================
 
-def render_tab_upload():
-    """Render Tab 1: Upload & AG-code Input."""
-    
-    st.markdown("# 📥 Upload & Input")
-    st.markdown("*Extract financial data from PDF documents and match against AG-codes*")
-    
-    # Step 1: PDF Upload
-    st.markdown("## Step 1: Upload Financial Document")
-    info_box(
-        "Upload bank statements, WOZ descriptions, hypotheek documents, or other financial records.",
-        box_type="info"
+def render_tab_invoer() -> None:
+    """Brondocument uitlezen en AG-codes invoeren."""
+    st.markdown("## Invoer")
+    st.caption(
+        "Lees eerst het brondocument uit, vul daarna de bedragen uit de aangifte in "
+        "en start de aansluiting."
     )
-    
-    uploaded_file = upload_pdf_section()
-    
-    if uploaded_file is not None:
-        st.session_state['uploaded_file'] = uploaded_file
-        st.success(f"✅ File uploaded: {uploaded_file.name} ({uploaded_file.size / 1024:.1f} KB)")
-        
-        # Extract button
-        col1, col2, col3 = st.columns([2, 1, 1])
-        
-        with col1:
-            extract_button = st.button(
-                "🔍 Extract Financial Data",
-                use_container_width=True,
+
+    # ---------- stap 1: document ----------
+    st.markdown("#### 1. Brondocument")
+
+    bestand = upload_pdf_section()
+
+    if bestand is not None:
+        kolom1, kolom2 = st.columns([1, 2])
+        with kolom1:
+            uitlezen = st.button(
+                "Document uitlezen",
                 type="primary",
-                key="extract_btn"
-            )
-        
-        with col2:
-            st.write("")
-        
-        with col3:
-            st.write("")
-        
-        if extract_button:
-            st.session_state['audit_in_progress'] = True
-            
-            # Save to temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
-                tmp.write(uploaded_file.getbuffer())
-                tmp_path = tmp.name
-            
-            try:
-                # Extract
-                progress_step(1, 3, "Initializing Gemini")
-                extractor, _, _, _ = initialize_clients()
-                
-                if not extractor:
-                    st.error("Extractor not initialized - check API keys")
-                    return
-                
-                progress_step(2, 3, "Processing PDF")
-                
-                with st.spinner("Extracting data from PDF..."):
-                    extracted_data = extractor.extract_from_pdf(tmp_path)
-                    st.session_state['extracted_data'] = extracted_data
-                
-                progress_step(3, 3, "Complete")
-                
-                # Display results
-                st.success("✅ Extraction successful!")
-                divider()
-                
-                # KPI cards
-                st.markdown("### Extraction Summary")
-                metrics = [
-                    {
-                        "label": "Confidence",
-                        "value": format_percentage(extracted_data.extraction_confidence),
-                        "icon": "🎯"
-                    },
-                    {
-                        "label": "Bank Accounts",
-                        "value": str(len(extracted_data.bank_accounts)),
-                        "icon": "🏦"
-                    },
-                    {
-                        "label": "Mortgages",
-                        "value": str(len(extracted_data.mortgages)),
-                        "icon": "🏠"
-                    },
-                    {
-                        "label": "Properties",
-                        "value": str(len(extracted_data.real_estate)),
-                        "icon": "🏘️"
-                    },
-                ]
-                metric_row(metrics, columns=4)
-                
-                divider()
-                
-                # Extracted data viewer
-                with st.expander("📋 View Extracted Data (JSON)"):
-                    code_block(
-                        json.dumps(extracted_data.model_dump(), indent=2, default=str),
-                        language="json"
-                    )
-                
-                log_audit_action("EXTRACT_PDF", "SUCCESS", 
-                               f"Confidence: {extracted_data.extraction_confidence}")
-            
-            except Exception as e:
-                st.error(f"❌ Extraction failed: {str(e)}")
-                logger.error(f"Extraction error: {str(e)}")
-                log_audit_action("EXTRACT_PDF", "FAILED", str(e))
-            
-            finally:
-                st.session_state['audit_in_progress'] = False
-                try:
-                    os.unlink(tmp_path)
-                except:
-                    pass
-    
-    # Step 2: AG-Codes Input
-    st.markdown("## Step 2: Enter AG-Codes to Audit")
-    
-    ag_codes = ag_codes_input()
-    st.session_state['ag_codes'] = ag_codes or {}
-    
-    # Step 3: Start Audit
-    st.markdown("## Step 3: Run Audit")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        run_audit = st.button(
-            "⚖️ Start Audit Matching",
-            use_container_width=True,
-            type="primary",
-            key="audit_btn"
-        )
-    
-    if run_audit:
-        if not st.session_state['extracted_data']:
-            info_box("Please upload and extract a PDF first", box_type="error")
-        elif not st.session_state['ag_codes']:
-            info_box("Please enter AG-codes", box_type="error")
-        else:
-            try:
-                _, matcher, _, _ = initialize_clients()
-                
-                if not matcher:
-                    st.error("Matcher not initialized")
-                    return
-                
-                progress_step(1, 2, "Running audit matcher")
-                
-                with st.spinner("Matching AG-codes..."):
-                    results, summary = matcher.match_ag_codes(
-                        extracted_data=st.session_state['extracted_data'],
-                        reported_amounts=st.session_state['ag_codes']
-                    )
-                
-                st.session_state['audit_results'] = results
-                st.session_state['audit_summary'] = summary
-                
-                progress_step(2, 2, "Audit complete")
-                
-                st.success("✅ Audit matching complete!")
-                info_box(
-                    f"Matched: {summary.matched}/{summary.total_ag_codes_checked} • "
-                    f"Mismatch: {summary.mismatched} • "
-                    f"Risk: {summary.overall_risk_level.value}",
-                    box_type="success"
-                )
-                
-                log_audit_action("MATCH_CODES", "SUCCESS", 
-                               f"Matched: {summary.matched}/{summary.total_ag_codes_checked}")
-            
-            except Exception as e:
-                st.error(f"❌ Audit failed: {str(e)}")
-                log_audit_action("MATCH_CODES", "FAILED", str(e))
-
-
-# ============================================================================
-# TAB 2: AUDIT DASHBOARD
-# ============================================================================
-
-def render_tab_dashboard():
-    """Render Tab 2: Audit Dashboard."""
-    
-    st.markdown("# 📊 Audit Dashboard")
-    st.markdown("*Real-time audit results and analysis*")
-    
-    if not st.session_state['audit_results']:
-        info_box(
-            "Upload a document and run matching in Tab 1 to see results here.",
-            box_type="info"
-        )
-        return
-    
-    summary = st.session_state['audit_summary']
-    results = st.session_state['audit_results']
-    
-    # KPI Summary
-    st.markdown("## Audit Summary")
-    audit_summary_cards({
-        "match_rate": summary.match_rate,
-        "matched": summary.matched,
-        "mismatched": summary.mismatched,
-        "missing": summary.missing_proof,
-        "total_difference": summary.total_difference_eur,
-        "risk_level": summary.overall_risk_level.value,
-        "duration": summary.duration_seconds,
-    })
-    
-    divider()
-    
-    # Risk Level
-    st.markdown("## Risk Assessment")
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        risk_level_indicator(summary.overall_risk_level.value)
-    
-    divider()
-    
-    # Results Table
-    st.markdown("## Detailed Results")
-    
-    display_data = []
-    for result in results:
-        display_data.append({
-            "ag_code": result.ag_code,
-            "name": result.ag_name,
-            "reported": format_currency(result.reported_amount_eur),
-            "extracted": format_currency(result.extracted_amount_eur),
-            "difference": format_currency(result.difference_eur),
-            "status": status_badge(result.status.value),
-            "confidence": format_percentage(result.confidence),
-        })
-    
-    audit_results_table(display_data)
-    
-    divider()
-    
-    # Export Options
-    st.markdown("## Export Results")
-    
-    json_export = json.dumps({
-        "summary": summary.model_dump(),
-        "results": [r.model_dump(mode='json') for r in results],
-        "timestamp": datetime.now().isoformat()
-    }, indent=2, default=str)
-    
-    export_buttons(json_export, file_name=f"audit_{st.session_state['klant_naam']}")
-
-
-# ============================================================================
-# TAB 3: RISK ANALYSIS & COMMUNICATION
-# ============================================================================
-
-def render_tab_risk_analysis():
-    """Render Tab 3: Risk Analysis & Client Communication."""
-    
-    st.markdown("# 📋 Fiscal Risk Analysis & Communication")
-    st.markdown("*AI-powered risk assessment and professional client communication*")
-    
-    if not st.session_state['audit_results']:
-        info_box(
-            "Complete the audit in Tab 1 to see risk analysis here.",
-            box_type="info"
-        )
-        return
-    
-    _, _, advisor, _ = initialize_clients()
-    
-    if not advisor:
-        info_box(
-            "Claude API key not configured. Risk analysis unavailable.",
-            box_type="warning"
-        )
-        return
-    
-    try:
-        # Generate risk assessment
-        with st.spinner("Analyzing fiscal risks..."):
-            risk_assessment = advisor.analyze_audit(
-                extracted_data=st.session_state['extracted_data'],
-                audit_results=st.session_state['audit_results'],
-                audit_summary=st.session_state['audit_summary']
-            )
-        
-        st.session_state['risk_assessment'] = risk_assessment
-        
-        # Risk Level Display
-        st.markdown("## Overall Risk Level")
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            risk_level_indicator(risk_assessment.overall_risk_level.value)
-        
-        divider()
-        
-        # Risk Points
-        if risk_assessment.risk_points:
-            st.markdown("## Risk Points & Findings")
-            
-            for i, point in enumerate(risk_assessment.risk_points, 1):
-                with st.expander(f"**#{i}** {point.risk_type} - {point.risk_level.value}"):
-                    st.markdown(f"**Description:** {point.description}")
-                    st.markdown(f"**Impact:** {point.impact_description}")
-                    if point.recommendation:
-                        st.markdown(f"**Recommendation:** {point.recommendation}")
-        
-        divider()
-        
-        # Client Email Draft
-        st.markdown("## Client Communication Email")
-        info_box(
-            "Professional email draft for client communication. Copy and customize as needed.",
-            box_type="info"
-        )
-        
-        email_text = advisor.generate_email(risk_assessment)
-        
-        email_output = copyable_text_area(
-            "📧 Email Draft",
-            value=email_text,
-            height=400,
-            key="email_draft"
-        )
-        
-        # Export email
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.download_button(
-                label="📥 Download Email",
-                data=email_output,
-                file_name=f"email_{st.session_state['klant_naam']}.txt",
-                mime="text/plain",
                 use_container_width=True,
+                disabled=not gemini_key(),
             )
-        
-        with col2:
-            if st.button("📋 Copy to Clipboard", use_container_width=True):
-                st.toast("Copied to clipboard!", icon="✅")
-        
-        with col3:
-            if st.button("📧 Preview Formatted", use_container_width=True):
-                st.info("Email preview ready to copy")
-        
-        log_audit_action("ANALYZE_RISKS", "SUCCESS", 
-                        f"Risk level: {risk_assessment.overall_risk_level.value}")
-    
-    except Exception as e:
-        st.error(f"❌ Risk analysis failed: {str(e)}")
-        log_audit_action("ANALYZE_RISKS", "FAILED", str(e))
+        with kolom2:
+            st.caption(f"{bestand.name} — {bestand.size / 1024:.0f} kB")
 
+        if uitlezen:
+            _lees_document_uit(bestand)
 
-# ============================================================================
-# MAIN APPLICATION
-# ============================================================================
+    if st.session_state["extracted_data"] is not None:
+        _toon_uitgelezen_data()
 
-def main():
-    """Main application entry point."""
-    
-    # Render sidebar
-    render_sidebar()
-    
-    # Main content area
-    st.markdown("# 📊 FiscAudit AI")
-    st.markdown("*Automated Fiscal Audit Platform for Dutch Tax Professionals*")
-    st.markdown("*Built with AI-powered extraction, deterministic matching, and GDPR compliance*")
-    
     divider()
-    
-    # Tabs
-    tab1, tab2, tab3 = st.tabs([
-        "📥 Upload & Input",
-        "📊 Audit Dashboard",
-        "📋 Risk Analysis"
-    ])
-    
-    with tab1:
-        render_tab_upload()
-    
-    with tab2:
+
+    # ---------- stap 2: AG-codes ----------
+    st.markdown("#### 2. Bedragen uit de aangifte")
+    st.caption(
+        "Vul per AG-code het bedrag in dat in de aangifte staat. Laat een regel "
+        "leeg om die code niet te controleren."
+    )
+
+    ag_codes = _ag_code_invoer()
+    st.session_state["ag_codes"] = ag_codes
+
+    divider()
+
+    # ---------- stap 3: aansluiting ----------
+    st.markdown("#### 3. Aansluiting")
+
+    ontbreekt = []
+    if st.session_state["extracted_data"] is None:
+        ontbreekt.append("een uitgelezen brondocument")
+    if not ag_codes:
+        ontbreekt.append("minimaal een AG-code met bedrag")
+
+    if ontbreekt:
+        info_box("Nog nodig: " + " en ".join(ontbreekt) + ".", "warning")
+
+    if st.button(
+        "Aansluiting starten",
+        type="primary",
+        use_container_width=True,
+        disabled=bool(ontbreekt),
+    ):
+        _voer_aansluiting_uit(ag_codes)
+
+
+def _lees_document_uit(bestand) -> None:
+    """Anonimiseer en lees het document uit."""
+    sleutel = gemini_key()
+    if not sleutel:
+        info_box("Er is geen Gemini-sleutel ingesteld.", "error")
+        return
+
+    tijdelijk_pad = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tijdelijk:
+            tijdelijk.write(bestand.getbuffer())
+            tijdelijk_pad = tijdelijk.name
+
+        progress_step(1, 2, "Document wordt gelezen")
+        with st.spinner("Bezig met uitlezen…"):
+            extractor = get_extractor(sleutel)
+            data = extractor.extract_from_pdf(tijdelijk_pad)
+
+        # Maskeer persoonsgegevens in de uitgelezen data voor verdere verwerking.
+        try:
+            anonymizer = DataAnonymizer()
+            anonymizer.anonymize_json(data.model_dump())
+            st.session_state["anonymization_report"] = (
+                anonymizer.get_anonymization_report_json()
+            )
+        except Exception as exc:
+            logger.warning("Maskeren van persoonsgegevens overgeslagen: %s", exc)
+
+        st.session_state["extracted_data"] = data
+        st.session_state["documentnaam"] = bestand.name
+        progress_step(2, 2, "Gereed")
+
+        info_box(f"{bestand.name} is uitgelezen.", "success")
+        log_actie("DOCUMENT_UITLEZEN", "GELUKT",
+                  f"betrouwbaarheid {data.extraction_confidence:.2f}")
+
+    except Exception as exc:
+        info_box(f"Het document kon niet worden uitgelezen: {exc}", "error")
+        logger.exception("Uitlezen mislukt")
+        log_actie("DOCUMENT_UITLEZEN", "MISLUKT", str(exc))
+
+    finally:
+        if tijdelijk_pad:
+            try:
+                os.unlink(tijdelijk_pad)
+            except OSError:
+                pass
+
+
+def _toon_uitgelezen_data() -> None:
+    """Kengetallen en ruwe data van het uitgelezen document."""
+    data: ExtractedFinancialData = st.session_state["extracted_data"]
+
+    betrouwbaarheid = data.extraction_confidence
+    if betrouwbaarheid < 0.7:
+        info_box(
+            f"De betrouwbaarheid van het uitlezen is {format_percentage(betrouwbaarheid)}. "
+            "Controleer de bedragen hieronder tegen het document voordat je verder gaat.",
+            "warning",
+        )
+
+    metric_row([
+        {"label": "Betrouwbaarheid", "value": format_percentage(betrouwbaarheid), "icon": "🎯"},
+        {"label": "Rekeningen", "value": format_count(len(data.bank_accounts)), "icon": "🏦"},
+        {"label": "Leningen", "value": format_count(len(data.mortgages)), "icon": "🏠"},
+        {"label": "Panden", "value": format_count(len(data.real_estate)), "icon": "🏘️"},
+    ], columns=4)
+
+    with st.expander(f"Uitgelezen gegevens uit {st.session_state['documentnaam']}"):
+        st.json(data.model_dump(mode="json"))
+
+
+def _ag_code_invoer() -> Dict[str, float]:
+    """Invoertabel voor de AG-codes.
+
+    Een tabel met vaste regels per bekende code, in plaats van een vrij
+    JSON-veld. Daarmee kan er geen onbekende code of ongeldige JSON meer
+    worden ingevoerd, en is meteen zichtbaar welke posten er zijn.
+    """
+    bestaand = st.session_state.get("ag_codes", {})
+
+    rijen = [
+        {
+            "AG-code": code,
+            "Post": gegevens["name"],
+            "Rubriek": gegevens.get("category", ""),
+            "Bedrag volgens aangifte": float(bestaand.get(code, 0.0)) or None,
+        }
+        for code, gegevens in sorted(AG_CODE_MAPPING.items())
+    ]
+
+    bewerkt = st.data_editor(
+        rijen,
+        use_container_width=True,
+        hide_index=True,
+        disabled=["AG-code", "Post", "Rubriek"],
+        column_config={
+            "AG-code": st.column_config.TextColumn(width="small"),
+            "Post": st.column_config.TextColumn(width="medium"),
+            "Rubriek": st.column_config.TextColumn(width="small"),
+            "Bedrag volgens aangifte": st.column_config.NumberColumn(
+                format="%.2f",
+                min_value=0.0,
+                step=1.0,
+                help="Laat leeg om deze code niet te controleren",
+            ),
+        },
+        key="ag_editor",
+    )
+
+    ingevuld: Dict[str, float] = {}
+    for rij in bewerkt:
+        bedrag = rij.get("Bedrag volgens aangifte")
+        if bedrag is not None and str(bedrag).strip() != "":
+            try:
+                ingevuld[rij["AG-code"]] = float(bedrag)
+            except (TypeError, ValueError):
+                continue
+
+    if ingevuld:
+        st.caption(f"{len(ingevuld)} code(s) worden gecontroleerd.")
+    return ingevuld
+
+
+def _voer_aansluiting_uit(ag_codes: Dict[str, float]) -> None:
+    """Sluit de AG-codes aan op het uitgelezen document."""
+    try:
+        with st.spinner("Bezig met aansluiten…"):
+            matcher = AuditMatcher()
+            resultaten, samenvatting = matcher.match_ag_codes(
+                extracted_data=st.session_state["extracted_data"],
+                reported_amounts=ag_codes,
+            )
+
+        st.session_state["audit_results"] = resultaten
+        st.session_state["audit_summary"] = samenvatting
+        st.session_state["risk_assessment"] = None  # advies opnieuw opstellen
+
+        aandacht = samenvatting.needs_attention_count
+        if aandacht == 0:
+            info_box(
+                "Alle gecontroleerde codes sluiten aan. Er is geen uitzoekwerk.",
+                "success",
+            )
+        else:
+            info_box(
+                f"{aandacht} van {samenvatting.total_ag_codes_checked} codes vragen "
+                f"aandacht. Ga naar het tabblad Dashboard.",
+                "warning",
+            )
+
+        log_actie("AANSLUITING", "GELUKT",
+                  f"{samenvatting.matched}/{samenvatting.total_ag_codes_checked}")
+
+    except Exception as exc:
+        info_box(f"De aansluiting is mislukt: {exc}", "error")
+        logger.exception("Aansluiting mislukt")
+        log_actie("AANSLUITING", "MISLUKT", str(exc))
+
+
+# ============================================================================
+# TAB 2 - DASHBOARD
+# ============================================================================
+
+def render_tab_dashboard() -> None:
+    """Resultaten van de aansluiting, met de uitzonderingen bovenaan."""
+    st.markdown("## Dashboard")
+
+    if not st.session_state["audit_results"]:
+        info_box(
+            "Er is nog geen aansluiting uitgevoerd. Begin bij het tabblad Invoer.",
+            "info",
+        )
+        return
+
+    resultaten: List[MatchResult] = st.session_state["audit_results"]
+    samenvatting: AuditSummary = st.session_state["audit_summary"]
+
+    st.caption(
+        f"{st.session_state['klant_naam'] or 'Naamloos dossier'} · "
+        f"aangiftejaar {st.session_state['aangiftejaar']} · "
+        f"uitgevoerd in {samenvatting.duration_seconds:.2f} seconden"
+    )
+
+    audit_summary_cards(samenvatting)
+    divider()
+
+    # ---------- risico ----------
+    kolom1, kolom2 = st.columns([1, 2])
+    with kolom1:
+        st.markdown("#### Dossierrisico")
+        risk_level_indicator(samenvatting.overall_risk_level.value)
+    with kolom2:
+        st.markdown("#### Verdeling")
+        _toon_verdeling(samenvatting)
+
+    divider()
+
+    # ---------- uitzonderingen ----------
+    uitzonderingen = [r for r in resultaten if r.needs_attention]
+    aansluitend = [r for r in resultaten if not r.needs_attention]
+
+    st.markdown("#### Uit te zoeken")
+    if uitzonderingen:
+        st.caption(
+            "Deze posten sluiten niet aan of missen onderbouwing. Gesorteerd op "
+            "omvang van het verschil."
+        )
+        audit_results_table(_filter_resultaten(uitzonderingen))
+    else:
+        info_box("Geen uitzonderingen. Alle gecontroleerde posten sluiten aan.", "success")
+
+    if aansluitend:
+        with st.expander(f"Sluit aan ({len(aansluitend)}) — geen actie nodig"):
+            audit_results_table(aansluitend)
+
+    divider()
+
+    # ---------- export ----------
+    st.markdown("#### Exporteren")
+    export_buttons(
+        json.dumps(
+            {
+                "dossier": {
+                    "klant": st.session_state["klant_naam"],
+                    "aangiftejaar": st.session_state["aangiftejaar"],
+                    "document": st.session_state["documentnaam"],
+                },
+                "samenvatting": samenvatting.model_dump(mode="json"),
+                "resultaten": [r.model_dump(mode="json") for r in resultaten],
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        file_name=f"controle_{st.session_state['klant_naam'] or 'dossier'}"
+                  f"_{st.session_state['aangiftejaar']}",
+    )
+
+    _opslaan_in_database(resultaten)
+
+
+def _toon_verdeling(samenvatting: AuditSummary) -> None:
+    """Staafdiagram van de statussen."""
+    verdeling = {
+        "Akkoord": samenvatting.matched,
+        "Klein verschil": samenvatting.minor_variance,
+        "Afwijking": samenvatting.mismatched,
+        "Geen bewijs": samenvatting.missing_proof,
+        "Fout": samenvatting.errors,
+    }
+    aanwezig = {k: v for k, v in verdeling.items() if v > 0}
+    if aanwezig:
+        st.bar_chart(aanwezig, horizontal=True, height=180)
+
+
+def _filter_resultaten(resultaten: List[MatchResult]) -> List[MatchResult]:
+    """Filters op status en rubriek."""
+    kolom1, kolom2 = st.columns(2)
+
+    statussen = sorted({r.status for r in resultaten}, key=lambda s: s.value)
+    with kolom1:
+        gekozen_status = st.multiselect(
+            "Filter op status",
+            options=[s.value for s in statussen],
+            default=[s.value for s in statussen],
+            format_func=status_label,
+            key="filter_status",
+        )
+
+    rubrieken = sorted({r.category for r in resultaten if r.category})
+    with kolom2:
+        gekozen_rubriek = st.multiselect(
+            "Filter op rubriek",
+            options=rubrieken,
+            default=rubrieken,
+            key="filter_rubriek",
+        )
+
+    gefilterd = [
+        r for r in resultaten
+        if r.status.value in gekozen_status
+        and (not r.category or r.category in gekozen_rubriek)
+    ]
+
+    if not gefilterd:
+        info_box("Geen regels passen bij deze filters.", "info")
+    return gefilterd
+
+
+def _opslaan_in_database(resultaten: List[MatchResult]) -> None:
+    """Resultaten wegschrijven naar Supabase, als die is ingesteld."""
+    url = get_secret("supabase_url", "SUPABASE_URL")
+    sleutel = get_secret("supabase_key", "SUPABASE_KEY", "supabase_anon_key")
+
+    if not (url and sleutel):
+        return
+
+    if not st.button("Resultaten opslaan in database", use_container_width=True):
+        return
+
+    if not st.session_state["klant_naam"]:
+        info_box("Vul eerst de naam van de klant in de zijbalk in.", "warning")
+        return
+
+    try:
+        database = get_database(url, sleutel)
+        # create_dossier geeft de UUID als string terug, niet een record.
+        dossier_id = database.create_dossier(
+            klant_naam=st.session_state["klant_naam"],
+            aangiftejaar=int(st.session_state["aangiftejaar"]),
+        )
+
+        if not dossier_id:
+            info_box("Het dossier kon niet worden aangemaakt.", "error")
+            return
+
+        if database.save_audit_results(dossier_id, resultaten):
+            info_box(f"Opgeslagen onder dossier {dossier_id}.", "success")
+        else:
+            info_box("Opslaan mislukt. Zie de logregels voor details.", "error")
+
+    except Exception as exc:
+        info_box(f"Opslaan mislukt: {exc}", "error")
+        logger.exception("Opslaan in database mislukt")
+
+
+# ============================================================================
+# TAB 3 - ADVIES EN COMMUNICATIE
+# ============================================================================
+
+def render_tab_advies() -> None:
+    """Risicoanalyse van Claude en het conceptbericht aan de klant."""
+    st.markdown("## Advies en communicatie")
+
+    if not st.session_state["audit_results"]:
+        info_box(
+            "Voer eerst een aansluiting uit. Het advies bouwt daarop voort.",
+            "info",
+        )
+        return
+
+    sleutel = claude_key()
+    if not sleutel:
+        info_box(
+            "Er is geen Claude-sleutel ingesteld, dus de inhoudelijke analyse is "
+            "niet beschikbaar. De cijfermatige aansluiting op het tabblad "
+            "Dashboard werkt hier onafhankelijk van.",
+            "warning",
+        )
+        return
+
+    if st.session_state["risk_assessment"] is None:
+        if not st.button("Analyse opstellen", type="primary"):
+            st.caption(
+                "De analyse weegt de gevonden afwijkingen fiscaal en stelt een "
+                "conceptbericht op. Dit kost een Claude-aanroep."
+            )
+            return
+        _stel_analyse_op(sleutel)
+
+    analyse = st.session_state["risk_assessment"]
+    if analyse is None:
+        return
+
+    # Let op: de dataclass gebruikt Nederlandse veldnamen (overall_risk,
+    # risico_punten, klant_email_concept). Eerdere versies lazen Engelse namen
+    # die niet bestonden, waardoor dit tabblad altijd een AttributeError gaf.
+    st.markdown("#### Inschatting")
+    risk_level_indicator(analyse.overall_risk.value)
+
+    divider()
+
+    if analyse.risico_punten:
+        st.markdown("#### Bevindingen")
+        for nummer, punt in enumerate(analyse.risico_punten, start=1):
+            with st.expander(f"{nummer}. {punt.titel}  ·  {punt.impact.value}"):
+                st.markdown(punt.beschrijving)
+                if punt.aanbevolen_actie:
+                    st.markdown(f"**Aanbevolen actie:** {punt.aanbevolen_actie}")
+                if punt.referentie:
+                    st.caption(f"Verwijzing: {punt.referentie}")
+
+    if analyse.aanbevelingen:
+        st.markdown("#### Aanbevelingen")
+        for aanbeveling in analyse.aanbevelingen:
+            st.markdown(f"- {aanbeveling}")
+
+    if analyse.sterke_punten:
+        with st.expander("Wat wel goed is onderbouwd"):
+            for punt in analyse.sterke_punten:
+                st.markdown(f"- {punt}")
+
+    if analyse.waarschuwingen:
+        for waarschuwing in analyse.waarschuwingen:
+            info_box(waarschuwing, "warning")
+
+    divider()
+
+    st.markdown("#### Conceptbericht aan de klant")
+    info_box(
+        "Dit is een concept. Lees het na en pas het aan voordat je het verstuurt; "
+        "de tekst is opgesteld door een taalmodel en niet fiscaal getoetst.",
+        "warning",
+    )
+
+    concept = analyse.klant_email_concept or ""
+    tekst = copyable_text_area("Bericht", value=concept, height=380, key="concept")
+
+    st.download_button(
+        "Bericht downloaden",
+        data=tekst,
+        file_name=f"bericht_{st.session_state['klant_naam'] or 'klant'}.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
+
+    if st.button("Analyse opnieuw opstellen"):
+        st.session_state["risk_assessment"] = None
+        st.rerun()
+
+
+def _stel_analyse_op(sleutel: str) -> None:
+    """Roep Claude aan voor de risicoanalyse."""
+    try:
+        with st.spinner("De bevindingen worden fiscaal gewogen…"):
+            advisor = get_advisor(sleutel)
+            analyse = advisor.analyze_audit(
+                results=st.session_state["audit_results"],
+                summary=st.session_state["audit_summary"],
+                extracted_data=st.session_state["extracted_data"].model_dump(mode="json"),
+                klant_naam=st.session_state["klant_naam"] or "de klant",
+                aangiftejaar=int(st.session_state["aangiftejaar"]),
+            )
+        st.session_state["risk_assessment"] = analyse
+        log_actie("ADVIES", "GELUKT", analyse.overall_risk.value)
+
+    except Exception as exc:
+        info_box(f"De analyse kon niet worden opgesteld: {exc}", "error")
+        logger.exception("Analyse mislukt")
+        log_actie("ADVIES", "MISLUKT", str(exc))
+
+
+# ============================================================================
+# HOOFDPROGRAMMA
+# ============================================================================
+
+def main() -> None:
+    """Bouw de pagina op."""
+    render_sidebar()
+
+    st.markdown("# FiscAudit AI")
+    st.caption(
+        "Sluit de aangegeven AG-codes aan op de brondocumenten. De cijfermatige "
+        "controle gebeurt in Python en is reproduceerbaar; alleen het uitlezen en "
+        "de inhoudelijke weging gebruiken een taalmodel."
+    )
+
+    tab_invoer, tab_dashboard, tab_advies = st.tabs(
+        ["Invoer", "Dashboard", "Advies en communicatie"]
+    )
+
+    with tab_invoer:
+        render_tab_invoer()
+    with tab_dashboard:
         render_tab_dashboard()
-    
-    with tab3:
-        render_tab_risk_analysis()
+    with tab_advies:
+        render_tab_advies()
 
 
 if __name__ == "__main__":

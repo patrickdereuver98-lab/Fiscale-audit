@@ -6,6 +6,7 @@ Supabase (PostgreSQL) integration met CRUD operaties voor audit runs.
 import json
 from typing import List, Dict, Optional, Any
 from datetime import datetime
+import logging
 from uuid import uuid4
 
 from supabase import create_client, Client
@@ -13,6 +14,10 @@ from supabase.lib.client_options import ClientOptions
 
 from .matcher import MatchResult, AuditSummary
 from .advisor import RiskAssessment
+
+
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -87,7 +92,7 @@ class SupabaseClient:
             response = self.db.table("dossiers").select("*").eq("id", dossier_id).execute()
             return response.data[0] if response.data else None
         except Exception as e:
-            print(f"Error fetching dossier: {e}")
+            logger.error("Fetching dossier mislukt: %s", e)
             return None
     
     def list_dossiers(self, limit: int = 50) -> List[Dict]:
@@ -96,7 +101,7 @@ class SupabaseClient:
             response = self.db.table("dossiers").select("*").order("created_at", desc=True).limit(limit).execute()
             return response.data or []
         except Exception as e:
-            print(f"Error listing dossiers: {e}")
+            logger.error("Listing dossiers mislukt: %s", e)
             return []
     
     def update_dossier_status(self, dossier_id: str, status: str, notities: str = ""):
@@ -109,7 +114,7 @@ class SupabaseClient:
             }
             self.db.table("dossiers").update(data).eq("id", dossier_id).execute()
         except Exception as e:
-            print(f"Error updating dossier: {e}")
+            logger.error("Updating dossier mislukt: %s", e)
     
     # ========================================================================
     # AUDIT RESULTS OPERATIONS
@@ -120,29 +125,52 @@ class SupabaseClient:
                           results: List[MatchResult]) -> bool:
         """
         Sla audit-resultaten op (batch insert).
+
+        De attribuutnamen hieronder moeten overeenkomen met MatchResult in
+        matcher.py. Ze verwezen eerder naar velden die niet bestonden
+        (bedrag_aangifte, verschil, opmerking, document_bron, timestamp),
+        waardoor deze functie bij elke aanroep een AttributeError gaf.
+        De kolomnamen in de database blijven Nederlands.
         """
         try:
-            # Converteer naar database format
             records = []
             for result in results:
+                # 'is not None' en niet 'if waarde', want een bedrag van 0,00 is
+                # falsy en werd daardoor als ontbrekend weggeschreven.
+                bedrag_document = (
+                    float(result.extracted_amount_eur)
+                    if result.extracted_amount_eur is not None
+                    else None
+                )
+                verschil = (
+                    float(result.difference_eur)
+                    if result.difference_eur is not None
+                    else None
+                )
+
                 records.append({
                     "dossier_id": dossier_id,
                     "ag_code": result.ag_code,
                     "status": result.status.value,
-                    "bedrag_aangifte": float(result.bedrag_aangifte) if result.bedrag_aangifte else None,
-                    "bedrag_document": float(result.bedrag_document) if result.bedrag_document else None,
-                    "verschil": float(result.verschil) if result.verschil else None,
-                    "opmerking": result.opmerking,
-                    "document_ref": result.document_bron,
-                    "created_at": result.timestamp
+                    "bedrag_aangifte": float(result.reported_amount_eur),
+                    "bedrag_document": bedrag_document,
+                    "verschil": verschil,
+                    "opmerking": result.notes,
+                    "document_ref": result.category or None,
+                    "created_at": result.audit_timestamp.isoformat(),
                 })
-            
-            # Batch insert
+
+            if not records:
+                logger.info("Geen resultaten om op te slaan")
+                return True
+
             self.db.table("audit_results").insert(records).execute()
+            logger.info("%d auditregels opgeslagen voor dossier %s",
+                        len(records), dossier_id)
             return True
-            
+
         except Exception as e:
-            print(f"Error saving audit results: {e}")
+            logger.error("Opslaan van auditresultaten mislukt: %s", e)
             return False
     
     def get_audit_results(self, dossier_id: str) -> List[Dict]:
@@ -151,7 +179,7 @@ class SupabaseClient:
             response = self.db.table("audit_results").select("*").eq("dossier_id", dossier_id).execute()
             return response.data or []
         except Exception as e:
-            print(f"Error fetching audit results: {e}")
+            logger.error("Fetching audit results mislukt: %s", e)
             return []
     
     def get_audit_summary(self, dossier_id: str) -> Dict:
@@ -160,7 +188,7 @@ class SupabaseClient:
             response = self.db.table("dossier_summary").select("*").eq("id", dossier_id).execute()
             return response.data[0] if response.data else {}
         except Exception as e:
-            print(f"Error fetching audit summary: {e}")
+            logger.error("Fetching audit summary mislukt: %s", e)
             return {}
     
     # ========================================================================
@@ -191,7 +219,7 @@ class SupabaseClient:
             return True
             
         except Exception as e:
-            print(f"Error saving fiscal notes: {e}")
+            logger.error("Saving fiscal notes mislukt: %s", e)
             return False
     
     def get_fiscal_notes(self, dossier_id: str) -> Optional[Dict]:
@@ -200,7 +228,7 @@ class SupabaseClient:
             response = self.db.table("fiscal_notes").select("*").eq("dossier_id", dossier_id).order("created_at", desc=True).limit(1).execute()
             return response.data[0] if response.data else None
         except Exception as e:
-            print(f"Error fetching fiscal notes: {e}")
+            logger.error("Fetching fiscal notes mislukt: %s", e)
             return None
     
     # ========================================================================
@@ -228,7 +256,7 @@ class SupabaseClient:
             return True
             
         except Exception as e:
-            print(f"Error saving document metadata: {e}")
+            logger.error("Saving document metadata mislukt: %s", e)
             return False
     
     def get_dossier_documents(self, dossier_id: str) -> List[Dict]:
@@ -237,7 +265,7 @@ class SupabaseClient:
             response = self.db.table("uploaded_documents").select("*").eq("dossier_id", dossier_id).execute()
             return response.data or []
         except Exception as e:
-            print(f"Error fetching documents: {e}")
+            logger.error("Fetching documents mislukt: %s", e)
             return []
     
     # ========================================================================
@@ -267,7 +295,7 @@ class SupabaseClient:
             return True
             
         except Exception as e:
-            print(f"Error logging action: {e}")
+            logger.error("Logging action mislukt: %s", e)
             return False
     
     def get_audit_log(self, dossier_id: str, limit: int = 100) -> List[Dict]:
@@ -276,7 +304,7 @@ class SupabaseClient:
             response = self.db.table("audit_logs").select("*").eq("dossier_id", dossier_id).order("created_at", desc=True).limit(limit).execute()
             return response.data or []
         except Exception as e:
-            print(f"Error fetching audit log: {e}")
+            logger.error("Fetching audit log mislukt: %s", e)
             return []
     
     # ========================================================================
@@ -309,7 +337,7 @@ class SupabaseClient:
             return stats
             
         except Exception as e:
-            print(f"Error fetching statistics: {e}")
+            logger.error("Fetching statistics mislukt: %s", e)
             return {}
     
     def export_dossier_report(self, dossier_id: str) -> Dict:
@@ -333,7 +361,7 @@ class SupabaseClient:
             return report
             
         except Exception as e:
-            print(f"Error exporting report: {e}")
+            logger.error("Exporting report mislukt: %s", e)
             return {}
     
     # ========================================================================
@@ -353,7 +381,7 @@ class SupabaseClient:
             return True
             
         except Exception as e:
-            print(f"Error deleting dossier: {e}")
+            logger.error("Deleting dossier mislukt: %s", e)
             return False
     
     def health_check(self) -> bool:
@@ -362,7 +390,7 @@ class SupabaseClient:
             response = self.db.table("dossiers").select("id").limit(1).execute()
             return True
         except Exception as e:
-            print(f"Database health check failed: {e}")
+            logger.error("Databaseverbinding controleren mislukt: %s", e)
             return False
 
 
@@ -375,7 +403,7 @@ def initialize_supabase(url: str, key: str) -> SupabaseClient:
     try:
         client = SupabaseClient(url, key)
         if client.health_check():
-            print("✓ Connected to Supabase")
+            logger.info("Verbonden met Supabase")
             return client
         else:
             raise RuntimeError("Health check failed")

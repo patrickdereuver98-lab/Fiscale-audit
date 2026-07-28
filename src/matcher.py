@@ -1,21 +1,23 @@
 """
-FiscAudit AI - Audit Matcher Engine (PRODUCTION-READY)
+FiscAudit AI - Aansluitingsmotor (matcher)
 
-Pure Python deterministic matching of AG-codes vs extracted financial data.
-NO AI involvement - 100% reproducible and auditable.
+Zuiver Python, deterministisch, geen AI. Vergelijkt de aangegeven bedragen per
+AG-code met wat uit de brondocumenten is uitgelezen. Reproduceerbaar en
+auditeerbaar: dezelfde invoer geeft altijd dezelfde uitkomst.
 
-AG-codes are Dutch tax authorities' standardized codes for reporting financial data.
-This module performs:
-1. Field extraction from Gemini output
-2. Direct comparison (€0 tolerance)
-3. Status classification (MATCH/MISMATCH/MISSING)
-4. Audit trail logging
+Codeconventie: identifiers en docstrings zijn Engels (standaard voor Python),
+alle teksten die de gebruiker ziet zijn Nederlands.
+
+LET OP - de AG-codetabel hieronder is een projectconventie, geen geverifieerde
+overname van de officiele aangiftecodes. Voor productiegebruik moet elke regel
+een-op-een gecontroleerd worden tegen de aangiftesoftware of de RGS-brugstaat.
+De aansluitlogica is generiek; alleen de mapping is dossierspecifiek.
 """
 
 import logging
+import time
 from enum import Enum
-from typing import Optional, List, Tuple
-from dataclasses import dataclass, field
+from typing import Optional, List, Tuple, Dict, Any
 from datetime import datetime
 
 from pydantic import BaseModel, Field, ConfigDict
@@ -31,423 +33,543 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 class AuditStatus(str, Enum):
-    """Status of AG-code match."""
-    MATCH = "MATCH"                      # Values match exactly (€0 difference)
-    MISMATCH = "MISMATCH"                # Values differ by >€100 or >2%
-    MINOR_VARIANCE = "MINOR_VARIANCE"    # Difference €1-100 (rounding/timing)
-    MISSING_PROOF = "MISSING_PROOF"      # No proof/data found in document
-    ERROR = "ERROR"                      # Error during comparison
-    PENDING = "PENDING"                  # Not yet processed
+    """Uitkomst van een aansluiting op een AG-code."""
+    MATCH = "MATCH"                      # sluit aan binnen afrondingsmarge
+    MINOR_VARIANCE = "MINOR_VARIANCE"    # klein verschil, waarschijnlijk afronding/timing
+    MISMATCH = "MISMATCH"                # echte afwijking, uitzoeken
+    MISSING_PROOF = "MISSING_PROOF"      # geen onderbouwing in de documenten
+    ERROR = "ERROR"                      # fout tijdens verwerken
+    PENDING = "PENDING"                  # nog niet verwerkt
+
+    @property
+    def label(self) -> str:
+        """Nederlandse omschrijving voor de interface."""
+        return {
+            "MATCH": "Akkoord",
+            "MINOR_VARIANCE": "Klein verschil",
+            "MISMATCH": "Afwijking",
+            "MISSING_PROOF": "Geen bewijs",
+            "ERROR": "Fout",
+            "PENDING": "In wachtrij",
+        }[self.value]
 
 
 class RiskLevel(str, Enum):
-    """Risk level for a finding."""
+    """Risiconiveau van een bevinding."""
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
     CRITICAL = "CRITICAL"
 
+    @property
+    def label(self) -> str:
+        """Nederlandse omschrijving voor de interface."""
+        return {
+            "LOW": "Laag",
+            "MEDIUM": "Middel",
+            "HIGH": "Hoog",
+            "CRITICAL": "Kritiek",
+        }[self.value]
+
+
+class Aggregation(str, Enum):
+    """Hoe een lijst met bewijsstukken tot een bedrag wordt herleid.
+
+    Expliciet in de mapping vastgelegd in plaats van raden op basis van
+    aanwezige attributen. Dat laatste leidde tot het vergelijken van
+    hypotheekschuld met hypotheekrente.
+    """
+    DIRECT = "direct"                        # enkel getalveld, geen lijst
+    BANK_BALANCE = "bank_balance"            # som van banksaldi
+    WOZ_VALUE = "woz_value"                  # som van WOZ-waarden, naar eigendomsdeel
+    MORTGAGE_DEBT = "mortgage_debt"          # som van restschulden
+    MORTGAGE_INTEREST = "mortgage_interest"  # jaarrente over de restschuld
+
 
 # ============================================================================
-# AG-CODE MAPPING (Dutch Tax Authority Standard Codes)
+# AG-CODE MAPPING
 # ============================================================================
+# Zie de waarschuwing in de moduledocstring: dit is een projectconventie.
 
-AG_CODE_MAPPING = {
-    # ========== BOX 1: SALARY & BUSINESS INCOME ==========
-    
+AG_CODE_MAPPING: Dict[str, Dict[str, Any]] = {
+
+    # ---------------- Box 1: inkomen uit werk en woning ----------------
+
     "AG1010": {
-        "name": "Salary income",
+        "name": "Bruto ondernemingsresultaat",
         "field": "business_income.gross_income_eur",
-        "description": "Gross salary from employment (Box 1)",
-        "category": "Income"
+        "aggregation": Aggregation.DIRECT,
+        "description": "Bruto-omzet of loon voor aftrekposten (box 1)",
+        "category": "Inkomen",
     },
-    
-    # ========== BOX 2: SUBSTANTIAL INTEREST ==========
-    # (Not often used, skipped for brevity)
-    
-    # ========== BOX 3: WEALTH/ASSETS ==========
-    
-    "AG3020": {
-        "name": "Bank & savings accounts",
-        "field": "bank_accounts",
-        "description": "Total of all bank saldi on Dec 31 (Box 3)",
-        "category": "Assets",
-        "aggregation": "sum"
-    },
-    
-    "AG3030": {
-        "name": "WOZ property value",
-        "field": "real_estate",
-        "description": "WOZ valuation of own residence (Box 3)",
-        "category": "Assets",
-        "aggregation": "sum"
-    },
-    
-    "AG3050": {
-        "name": "Other investments (Box 3)",
-        "field": "other_assets_eur",
-        "description": "Stocks, bonds, other securities",
-        "category": "Assets"
-    },
-    
-    # ========== BUSINESS DEDUCTIONS ==========
-    
+
     "AG4010": {
-        "name": "Business expenses",
+        "name": "Aftrekbare ondernemingskosten",
         "field": "business_income.deductible_expenses_eur",
-        "description": "Total deductible business expenses",
-        "category": "Deductions"
+        "aggregation": Aggregation.DIRECT,
+        "description": "Totaal aan zakelijke kosten dat in aftrek is gebracht",
+        "category": "Aftrekposten",
     },
-    
+
     "AG4020": {
-        "name": "KIA profit",
+        "name": "Kleinschaligheidsinvesteringsaftrek (KIA)",
         "field": "kia_profit_eur",
-        "description": "Young entrepreneur deduction (KIA)",
-        "category": "Deductions"
+        "aggregation": Aggregation.DIRECT,
+        "description": "Geclaimde KIA over de investeringen van het boekjaar",
+        "category": "Aftrekposten",
     },
-    
-    # ========== MORTGAGE & INTEREST DEDUCTIONS ==========
-    
+
     "AG5010": {
-        "name": "Mortgage interest",
+        "name": "Aftrekbare hypotheekrente",
         "field": "mortgages",
-        "description": "Deductible mortgage interest (Box 1)",
-        "category": "Deductions",
-        "aggregation": "sum"
+        "aggregation": Aggregation.MORTGAGE_INTEREST,
+        "description": "Betaalde rente eigenwoningschuld (box 1)",
+        "category": "Aftrekposten",
+        # Benadering wanneer het document alleen schuld en rentepercentage geeft;
+        # zie _mortgage_interest voor de berekening en de beperking daarvan.
+        "approximate": True,
     },
-    
+
     "AG5020": {
-        "name": "Student loan interest",
+        "name": "Overige aftrekposten",
         "field": "deductible_items_eur",
-        "description": "Deductible student loan interest",
-        "category": "Deductions"
+        "aggregation": Aggregation.DIRECT,
+        "description": "Overige persoonsgebonden aftrek",
+        "category": "Aftrekposten",
+    },
+
+    # ---------------- Box 3: sparen en beleggen ----------------
+
+    "AG3020": {
+        "name": "Bank- en spaarrekeningen",
+        "field": "bank_accounts",
+        "aggregation": Aggregation.BANK_BALANCE,
+        "description": "Saldo van alle rekeningen per 1 januari (box 3)",
+        "category": "Bezittingen",
+    },
+
+    "AG3030": {
+        "name": "Onroerende zaken (niet eigen woning)",
+        "field": "real_estate",
+        "aggregation": Aggregation.WOZ_VALUE,
+        "description": (
+            "WOZ-waarde van tweede woning of verhuurd pand, naar eigendomsdeel "
+            "(box 3). De eigen woning hoort in box 1 en niet onder deze code."
+        ),
+        "category": "Bezittingen",
+    },
+
+    "AG3050": {
+        "name": "Overige bezittingen en beleggingen",
+        "field": "other_assets_eur",
+        "aggregation": Aggregation.DIRECT,
+        "description": "Effecten, obligaties en overige beleggingen (box 3)",
+        "category": "Bezittingen",
+    },
+
+    "AG3060": {
+        "name": "Schulden",
+        "field": "mortgages",
+        "aggregation": Aggregation.MORTGAGE_DEBT,
+        "description": "Restschuld van leningen per 1 januari (box 3)",
+        "category": "Schulden",
     },
 }
 
 
 # ============================================================================
-# PYDANTIC MODELS (STRICT VALIDATION)
+# PYDANTIC MODELS
 # ============================================================================
 
 class MatchResult(BaseModel):
-    """Result of single AG-code comparison."""
-    
+    """Uitkomst van een enkele AG-code-aansluiting."""
+
     model_config = ConfigDict(strict=True, str_strip_whitespace=True)
-    
-    ag_code: str = Field(..., description="AG-code (e.g., AG3020)")
-    ag_name: str = Field(..., description="Description of AG-code")
-    reported_amount_eur: float = Field(..., description="Amount user reported")
-    extracted_amount_eur: float = Field(..., description="Amount found in documents")
-    difference_eur: float = Field(..., description="Difference (reported - extracted)")
-    difference_pct: float = Field(default=0, description="Percentage difference")
-    status: AuditStatus = Field(..., description="Match status")
-    confidence: float = Field(default=0.95, ge=0, le=1, description="Confidence in match")
-    notes: str = Field(default="", description="Additional notes/explanations")
+
+    ag_code: str = Field(..., description="AG-code, bijvoorbeeld AG3020")
+    ag_name: str = Field(..., description="Omschrijving van de AG-code")
+    category: str = Field(default="", description="Rubriek, bijvoorbeeld Bezittingen")
+    reported_amount_eur: float = Field(..., description="Aangegeven bedrag")
+    extracted_amount_eur: Optional[float] = Field(
+        default=None,
+        description="Uit de documenten herleid bedrag, None als er geen bewijs is",
+    )
+    difference_eur: Optional[float] = Field(
+        default=None,
+        description="Aangegeven minus herleid; None als er geen bewijs is",
+    )
+    difference_pct: Optional[float] = Field(
+        default=None, description="Verschil in procenten van het herleide bedrag"
+    )
+    status: AuditStatus = Field(..., description="Uitkomst van de aansluiting")
+    confidence: float = Field(
+        default=0.95, ge=0, le=1, description="Betrouwbaarheid van de aansluiting"
+    )
+    is_approximate: bool = Field(
+        default=False,
+        description="True als het herleide bedrag een benadering is, geen harde uitlezing",
+    )
+    notes: str = Field(default="", description="Toelichting voor de gebruiker")
     audit_timestamp: datetime = Field(default_factory=datetime.now)
 
+    @property
+    def needs_attention(self) -> bool:
+        """Of deze regel op het uitzonderingendashboard hoort."""
+        return self.status in (
+            AuditStatus.MISMATCH,
+            AuditStatus.MISSING_PROOF,
+            AuditStatus.ERROR,
+        )
+
     def risk_level(self) -> RiskLevel:
-        """Determine risk level based on status and difference."""
+        """Risiconiveau op basis van status en omvang van het verschil."""
         if self.status == AuditStatus.MATCH:
             return RiskLevel.LOW
-        elif self.status == AuditStatus.MINOR_VARIANCE:
-            return RiskLevel.LOW if abs(self.difference_eur) < 100 else RiskLevel.MEDIUM
-        elif self.status == AuditStatus.MISMATCH:
-            if abs(self.difference_eur) > 50000:
+
+        if self.status == AuditStatus.MINOR_VARIANCE:
+            return RiskLevel.LOW
+
+        if self.status == AuditStatus.MISMATCH:
+            afwijking = abs(self.difference_eur or 0)
+            if afwijking > 50_000:
                 return RiskLevel.CRITICAL
-            elif abs(self.difference_eur) > 10000:
+            if afwijking > 10_000:
                 return RiskLevel.HIGH
-            else:
-                return RiskLevel.MEDIUM
-        elif self.status == AuditStatus.MISSING_PROOF:
-            return RiskLevel.HIGH
-        else:
             return RiskLevel.MEDIUM
+
+        if self.status == AuditStatus.MISSING_PROOF:
+            # Een ontbrekend bewijsstuk voor een groot bedrag weegt zwaarder.
+            return RiskLevel.HIGH if self.reported_amount_eur > 10_000 else RiskLevel.MEDIUM
+
+        return RiskLevel.MEDIUM
 
 
 class AuditSummary(BaseModel):
-    """Summary of complete audit."""
-    
+    """Samenvatting van een volledige controle.
+
+    Let op het onderscheid tussen de drie geldbedragen. Ze meten verschillende
+    dingen en mogen niet door elkaar gebruikt worden:
+
+    - gross_difference_eur: som van de absolute verschillen. Dit is de omvang
+      van het uitzoekwerk. Tegengestelde fouten heffen elkaar hier niet op.
+    - net_difference_eur: som van de getekende verschillen. Dit is het effect
+      op de aangifte als saldo.
+    - unverified_amount_eur: aangegeven bedragen zonder onderbouwing. Onbekend,
+      geen fout, dus apart gehouden.
+    """
+
     model_config = ConfigDict(strict=True)
-    
-    total_ag_codes_checked: int = Field(..., description="Total AG-codes processed")
-    matched: int = Field(..., description="Number of matches (€0 difference)")
-    minor_variance: int = Field(..., description="Minor variances (€1-100)")
-    mismatched: int = Field(..., description="Significant mismatches")
-    missing_proof: int = Field(..., description="Missing documentation")
-    errors: int = Field(..., description="Processing errors")
-    total_difference_eur: float = Field(..., description="Sum of all differences")
-    overall_risk_level: RiskLevel = Field(..., description="Overall risk assessment")
+
+    total_ag_codes_checked: int = Field(..., description="Aantal gecontroleerde codes")
+    matched: int = Field(..., description="Aantal dat aansluit")
+    minor_variance: int = Field(..., description="Aantal met klein verschil")
+    mismatched: int = Field(..., description="Aantal met echte afwijking")
+    missing_proof: int = Field(..., description="Aantal zonder onderbouwing")
+    errors: int = Field(..., description="Aantal verwerkingsfouten")
+
+    gross_difference_eur: float = Field(
+        ..., description="Som van absolute verschillen, exclusief ontbrekend bewijs"
+    )
+    net_difference_eur: float = Field(
+        ..., description="Som van getekende verschillen, exclusief ontbrekend bewijs"
+    )
+    unverified_amount_eur: float = Field(
+        ..., description="Som van aangegeven bedragen zonder onderbouwing"
+    )
+
+    overall_risk_level: RiskLevel = Field(..., description="Hoogste risico in het dossier")
     audit_timestamp: datetime = Field(default_factory=datetime.now)
-    duration_seconds: float = Field(default=0, description="Audit duration in seconds")
+    duration_seconds: float = Field(default=0, description="Doorlooptijd in seconden")
 
     @property
     def match_rate(self) -> float:
-        """Calculate percentage of matched codes."""
+        """Percentage dat aansluit, inclusief kleine afrondingsverschillen.
+
+        Kleine verschillen tellen mee als aangesloten: ze vragen geen actie.
+        Wie de strikte variant wil, gebruikt exact_match_rate.
+        """
         if self.total_ag_codes_checked == 0:
-            return 0
+            return 0.0
+        return ((self.matched + self.minor_variance) / self.total_ag_codes_checked) * 100
+
+    @property
+    def exact_match_rate(self) -> float:
+        """Percentage dat exact aansluit, zonder kleine verschillen."""
+        if self.total_ag_codes_checked == 0:
+            return 0.0
         return (self.matched / self.total_ag_codes_checked) * 100
+
+    @property
+    def needs_attention_count(self) -> int:
+        """Aantal regels dat handmatig uitzoekwerk vraagt."""
+        return self.mismatched + self.missing_proof + self.errors
 
 
 # ============================================================================
-# AUDIT MATCHER
+# MATCHER
 # ============================================================================
 
 class AuditMatcher:
-    """Pure Python audit matching engine.
-    
-    Compares user-reported AG-codes with extracted financial data.
-    Features:
-    - Deterministic matching (reproducible)
-    - Zero tolerance for amounts (€0.00 equality)
-    - Audit trail logging
-    - Risk classification
-    
-    Example:
+    """Deterministische aansluitmotor.
+
+    Vergelijkt aangegeven bedragen met uitgelezen brondocumenten.
+
+    Voorbeeld:
         >>> matcher = AuditMatcher()
-        >>> results = matcher.match_ag_codes(
+        >>> resultaten, samenvatting = matcher.match_ag_codes(
         ...     extracted_data=data,
-        ...     reported_amounts={"AG3020": 50000}
+        ...     reported_amounts={"AG3020": 50000},
         ... )
     """
-    
-    # Tolerances
-    EXACT_MATCH_TOLERANCE_EUR = 0.01  # €0.01
-    MINOR_VARIANCE_THRESHOLD_EUR = 100  # €100
-    VARIANCE_THRESHOLD_PCT = 2  # 2%
 
-    def __init__(self):
-        """Initialize AuditMatcher."""
-        logger.info("AuditMatcher initialized (pure Python, zero AI)")
+    # Een aangifte gaat in hele euro's, dus een verschil tot en met EUR 1 is
+    # afronding en geen bevinding. Zonder deze marge wordt elk afrondingsverschil
+    # een rode regel en verdrinkt het echte werk in ruis.
+    ROUNDING_TOLERANCE_EUR = 1.00
+
+    # Daarboven: klein verschil zolang het zowel absoluut als relatief klein is.
+    MINOR_VARIANCE_THRESHOLD_EUR = 100.00
+    VARIANCE_THRESHOLD_PCT = 2.0
+
+    def __init__(self) -> None:
+        logger.info("AuditMatcher gestart (zuiver Python, geen AI)")
+
+    # ---------------------- waardebepaling per bewijsstuk ----------------------
+
+    @staticmethod
+    def _woz_value(item: Any) -> float:
+        """WOZ-waarde naar eigendomsdeel.
+
+        Bij gedeeld eigendom hoort alleen het eigen aandeel in de aangifte.
+        De volle WOZ-waarde nemen levert bij 50% eigendom een factor 2 fout op.
+        """
+        waarde = float(getattr(item, "woz_value_eur", 0.0))
+        deel = float(getattr(item, "ownership_pct", 100.0))
+        return waarde * deel / 100.0
+
+    @staticmethod
+    def _mortgage_interest(item: Any) -> float:
+        """Jaarrente over een lening.
+
+        Voorkeur: het bedrag dat de jaaropgave zelf noemt. Ontbreekt dat, dan
+        wordt het benaderd als restschuld maal rentepercentage. Die benadering
+        overschat bij een annuitaire of lineaire lening, omdat de schuld in de
+        loop van het jaar daalt. Daarom wordt de regel als benadering gemarkeerd
+        en niet als harde uitlezing gepresenteerd.
+        """
+        gerapporteerd = getattr(item, "annual_interest_paid_eur", None)
+        if gerapporteerd is not None:
+            return float(gerapporteerd)
+
+        schuld = float(getattr(item, "current_balance_eur", 0.0))
+        percentage = float(getattr(item, "interest_rate_pct", 0.0))
+        return schuld * percentage / 100.0
+
+    def _aggregate(self, items: List[Any], how: Aggregation) -> float:
+        """Herleid een lijst bewijsstukken tot een bedrag."""
+        if how == Aggregation.BANK_BALANCE:
+            return float(sum(getattr(i, "balance_eur", 0.0) for i in items))
+        if how == Aggregation.WOZ_VALUE:
+            return float(sum(self._woz_value(i) for i in items))
+        if how == Aggregation.MORTGAGE_DEBT:
+            return float(sum(getattr(i, "current_balance_eur", 0.0) for i in items))
+        if how == Aggregation.MORTGAGE_INTEREST:
+            return float(sum(self._mortgage_interest(i) for i in items))
+        raise ValueError(f"Aggregatie {how} is niet geldig voor een lijst")
+
+    # ---------------------- veldextractie ----------------------
 
     def _extract_field_value(
         self,
         data: ExtractedFinancialData,
-        field_path: str
+        field_path: str,
+        how: Aggregation,
     ) -> Optional[float]:
-        """Extract value from ExtractedFinancialData using dot notation.
-        
-        Supports:
-        - Simple fields: "bank_accounts" → sums all account balances
-        - Nested fields: "business_income.gross_income_eur"
-        - List aggregation: "mortgages" → sums current_balance_eur
-        
-        Args:
-            data: Extracted financial data
-            field_path: Field path (e.g., "business_income.gross_income_eur")
-            
+        """Herleid het bedrag voor een AG-code uit de uitgelezen data.
+
+        Onderscheidt bewust twee gevallen die eerder allebei op None uitkwamen:
+        een lege lijst betekent geen bewijs (None), een gevulde lijst die op
+        nul uitkomt is wel bewijs van een nulstand (0.0). Dat verschil bepaalt
+        of iets als 'geen bewijs' of als 'sluit aan' op het dashboard komt.
+
         Returns:
-            Float value or None if not found
+            Het bedrag, of None als er geen onderbouwing is.
         """
         try:
-            parts = field_path.split('.')
-            current = data
-            
-            for i, part in enumerate(parts):
-                if hasattr(current, part):
-                    current = getattr(current, part)
-                else:
-                    logger.debug(f"Field not found: {field_path}")
+            current: Any = data
+            for part in field_path.split("."):
+                if current is None or not hasattr(current, part):
+                    logger.debug("Veld niet aanwezig: %s", field_path)
                     return None
-            
-            # If we have a list, aggregate values
+                current = getattr(current, part)
+
+            if current is None:
+                return None
+
             if isinstance(current, list):
-                total = 0
-                for item in current:
-                    if hasattr(item, 'balance_eur'):
-                        total += item.balance_eur
-                    elif hasattr(item, 'woz_value_eur'):
-                        total += item.woz_value_eur
-                    elif hasattr(item, 'current_balance_eur'):
-                        total += item.current_balance_eur
-                return total if total > 0 else None
-            
-            # If float or int, return as float
+                if not current:
+                    return None  # geen enkel bewijsstuk aangetroffen
+                return self._aggregate(current, how)
+
+            # bool is een subtype van int; hier nooit een bedrag
+            if isinstance(current, bool):
+                return None
+
             if isinstance(current, (int, float)):
                 return float(current)
-            
-            logger.debug(f"Cannot extract numeric value from {field_path}: {type(current)}")
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error extracting {field_path}: {str(e)}")
+
+            logger.debug("Geen bedrag te herleiden uit %s (%s)", field_path, type(current))
             return None
 
-    def _calculate_difference(
-        self,
-        reported: float,
-        extracted: float
-    ) -> Tuple[float, float]:
-        """Calculate absolute and percentage difference.
-        
-        Args:
-            reported: Reported amount
-            extracted: Extracted amount
-            
+        except Exception as exc:
+            logger.error("Fout bij uitlezen van %s: %s", field_path, exc)
+            return None
+
+    # ---------------------- vergelijking ----------------------
+
+    @staticmethod
+    def _calculate_difference(reported: float, extracted: float) -> Tuple[float, float]:
+        """Bereken het getekende verschil en het percentage.
+
         Returns:
-            Tuple of (abs_diff, pct_diff)
+            (getekend verschil, percentage van het herleide bedrag)
+            Positief verschil betekent dat er te veel is aangegeven.
         """
-        abs_diff = abs(reported - extracted)
-        
-        # Avoid division by zero
+        verschil = round(reported - extracted, 2)
+
         if extracted == 0:
-            pct_diff = 100.0 if reported > 0 else 0.0
+            percentage = 0.0 if verschil == 0 else 100.0
         else:
-            pct_diff = (abs_diff / abs(extracted)) * 100
-        
-        return abs_diff, pct_diff
+            percentage = abs(verschil) / abs(extracted) * 100
 
-    def _determine_status(
-        self,
-        abs_diff: float,
-        pct_diff: float,
-        extracted_value: Optional[float]
-    ) -> AuditStatus:
-        """Determine match status based on differences.
-        
-        Logic:
-        - €0.00 difference → MATCH
-        - €0.01-€100 difference → MINOR_VARIANCE
-        - >€100 or >2% difference → MISMATCH
-        - No extracted value → MISSING_PROOF
-        
-        Args:
-            abs_diff: Absolute difference in EUR
-            pct_diff: Percentage difference
-            extracted_value: Extracted value (or None if missing)
-            
-        Returns:
-            AuditStatus
+        return verschil, round(percentage, 2)
+
+    def _determine_status(self, difference_eur: float, difference_pct: float) -> AuditStatus:
+        """Bepaal de status op basis van het verschil.
+
+        - tot en met EUR 1: afronding, sluit aan
+        - daarboven en zowel onder EUR 100 als onder 2%: klein verschil
+        - anders: afwijking
         """
-        if extracted_value is None:
-            return AuditStatus.MISSING_PROOF
-        
-        if abs_diff <= self.EXACT_MATCH_TOLERANCE_EUR:
+        afwijking = abs(difference_eur)
+
+        if afwijking <= self.ROUNDING_TOLERANCE_EUR:
             return AuditStatus.MATCH
-        
-        if abs_diff <= self.MINOR_VARIANCE_THRESHOLD_EUR and pct_diff <= self.VARIANCE_THRESHOLD_PCT:
+
+        if (
+            afwijking <= self.MINOR_VARIANCE_THRESHOLD_EUR
+            and difference_pct <= self.VARIANCE_THRESHOLD_PCT
+        ):
             return AuditStatus.MINOR_VARIANCE
-        
+
         return AuditStatus.MISMATCH
 
     def match_single_ag_code(
         self,
         ag_code: str,
         reported_amount_eur: float,
-        extracted_data: ExtractedFinancialData
+        extracted_data: ExtractedFinancialData,
     ) -> MatchResult:
-        """Compare single AG-code against extracted data.
-        
-        Args:
-            ag_code: Code to match (e.g., "AG3020")
-            reported_amount_eur: Amount user reported
-            extracted_data: Data extracted from documents
-            
-        Returns:
-            MatchResult with status and details
-        """
+        """Sluit een enkele AG-code aan op de brondocumenten."""
         try:
-            # Validate AG-code exists
-            if ag_code not in AG_CODE_MAPPING:
+            mapping = AG_CODE_MAPPING.get(ag_code)
+
+            if mapping is None:
                 return MatchResult(
                     ag_code=ag_code,
-                    ag_name="Unknown",
-                    reported_amount_eur=reported_amount_eur,
-                    extracted_amount_eur=0,
-                    difference_eur=reported_amount_eur,
+                    ag_name="Onbekende code",
+                    reported_amount_eur=float(reported_amount_eur),
                     status=AuditStatus.ERROR,
-                    notes=f"Unknown AG-code: {ag_code}"
+                    confidence=0.0,
+                    notes=f"AG-code {ag_code} staat niet in de codetabel",
                 )
-            
-            mapping = AG_CODE_MAPPING[ag_code]
-            
-            # Extract value from data
+
             extracted_value = self._extract_field_value(
-                extracted_data,
-                mapping['field']
+                extracted_data, mapping["field"], mapping["aggregation"]
             )
-            
-            # If no data found
+
             if extracted_value is None:
                 return MatchResult(
                     ag_code=ag_code,
-                    ag_name=mapping['name'],
-                    reported_amount_eur=reported_amount_eur,
-                    extracted_amount_eur=0,
-                    difference_eur=reported_amount_eur,
+                    ag_name=mapping["name"],
+                    category=mapping.get("category", ""),
+                    reported_amount_eur=float(reported_amount_eur),
+                    extracted_amount_eur=None,
+                    difference_eur=None,
                     status=AuditStatus.MISSING_PROOF,
-                    notes=f"No {mapping['description']} found in documents",
-                    confidence=0.0
+                    confidence=0.0,
+                    notes=(
+                        f"Geen onderbouwing gevonden voor {mapping['name'].lower()}. "
+                        "Upload het bijbehorende brondocument."
+                    ),
                 )
-            
-            # Calculate differences
-            abs_diff, pct_diff = self._calculate_difference(
-                reported_amount_eur,
-                extracted_value
+
+            verschil, percentage = self._calculate_difference(
+                float(reported_amount_eur), extracted_value
             )
-            
-            # Determine status
-            status = self._determine_status(abs_diff, pct_diff, extracted_value)
-            
-            # Build result
+            status = self._determine_status(verschil, percentage)
+            benadering = bool(mapping.get("approximate", False))
+
+            toelichting = mapping["description"]
+            if benadering and status != AuditStatus.MATCH:
+                toelichting += (
+                    " Let op: het herleide bedrag is een benadering op basis van "
+                    "restschuld en rentepercentage. Controleer de jaaropgave."
+                )
+
             result = MatchResult(
                 ag_code=ag_code,
-                ag_name=mapping['name'],
-                reported_amount_eur=reported_amount_eur,
+                ag_name=mapping["name"],
+                category=mapping.get("category", ""),
+                reported_amount_eur=float(reported_amount_eur),
                 extracted_amount_eur=extracted_value,
-                difference_eur=reported_amount_eur - extracted_value,
-                difference_pct=pct_diff,
+                difference_eur=verschil,
+                difference_pct=percentage,
                 status=status,
-                notes=mapping['description'],
-                confidence=0.95 if status == AuditStatus.MATCH else 0.85
+                confidence=0.70 if benadering else (0.95 if status == AuditStatus.MATCH else 0.85),
+                is_approximate=benadering,
+                notes=toelichting,
             )
-            
+
             logger.info(
-                f"{ag_code}: {status.value} "
-                f"(reported €{reported_amount_eur:,.2f}, "
-                f"extracted €{extracted_value:,.2f}, "
-                f"diff €{abs_diff:,.2f})"
+                "%s: %s (aangegeven EUR %s, herleid EUR %s, verschil EUR %s)",
+                ag_code,
+                status.value,
+                f"{reported_amount_eur:,.2f}",
+                f"{extracted_value:,.2f}",
+                f"{verschil:,.2f}",
             )
-            
             return result
-            
-        except Exception as e:
-            logger.error(f"Error matching {ag_code}: {str(e)}")
+
+        except Exception as exc:
+            logger.error("Fout bij aansluiten van %s: %s", ag_code, exc)
             return MatchResult(
                 ag_code=ag_code,
-                ag_name="Error",
-                reported_amount_eur=reported_amount_eur,
-                extracted_amount_eur=0,
-                difference_eur=reported_amount_eur,
+                ag_name="Fout",
+                reported_amount_eur=float(reported_amount_eur),
                 status=AuditStatus.ERROR,
-                notes=f"Error during matching: {str(e)}",
-                confidence=0.0
+                confidence=0.0,
+                notes=f"Onverwachte fout tijdens de aansluiting: {exc}",
             )
 
     def match_ag_codes(
         self,
         extracted_data: ExtractedFinancialData,
-        reported_amounts: dict[str, float]
+        reported_amounts: Dict[str, float],
     ) -> Tuple[List[MatchResult], AuditSummary]:
-        """Match multiple AG-codes against extracted data.
-        
-        Args:
-            extracted_data: Financial data extracted from documents
-            reported_amounts: Dict of {AG_code: amount_eur}
-            
-        Returns:
-            Tuple of (match_results, audit_summary)
-        """
-        import time
-        start_time = time.time()
-        
-        logger.info(f"Starting audit matching for {len(reported_amounts)} AG-codes")
-        
-        results = []
-        for ag_code, amount in reported_amounts.items():
-            result = self.match_single_ag_code(ag_code, amount, extracted_data)
-            results.append(result)
-        
-        # Compile summary
+        """Sluit meerdere AG-codes aan en stel de samenvatting op."""
+        start = time.perf_counter()
+        logger.info("Start aansluiting voor %d AG-codes", len(reported_amounts))
+
+        results = [
+            self.match_single_ag_code(code, amount, extracted_data)
+            for code, amount in reported_amounts.items()
+        ]
+
+        # Alleen regels met een daadwerkelijk verschil tellen mee in de bedragen.
+        # Ontbrekend bewijs is onbekend, geen fout, en wordt apart getoond.
+        verschillen = [r.difference_eur for r in results if r.difference_eur is not None]
+
         summary = AuditSummary(
             total_ag_codes_checked=len(results),
             matched=sum(1 for r in results if r.status == AuditStatus.MATCH),
@@ -455,36 +577,42 @@ class AuditMatcher:
             mismatched=sum(1 for r in results if r.status == AuditStatus.MISMATCH),
             missing_proof=sum(1 for r in results if r.status == AuditStatus.MISSING_PROOF),
             errors=sum(1 for r in results if r.status == AuditStatus.ERROR),
-            total_difference_eur=sum(r.difference_eur for r in results),
+            gross_difference_eur=round(sum(abs(d) for d in verschillen), 2),
+            net_difference_eur=round(sum(verschillen), 2),
+            unverified_amount_eur=round(
+                sum(
+                    r.reported_amount_eur
+                    for r in results
+                    if r.status == AuditStatus.MISSING_PROOF
+                ),
+                2,
+            ),
             overall_risk_level=self._determine_overall_risk(results),
-            duration_seconds=time.time() - start_time
+            duration_seconds=round(time.perf_counter() - start, 3),
         )
-        
+
         logger.info(
-            f"✓ Audit complete. {summary.matched}/{summary.total_ag_codes_checked} matched. "
-            f"Total diff: €{summary.total_difference_eur:,.2f}. "
-            f"Risk: {summary.overall_risk_level.value}. "
-            f"Duration: {summary.duration_seconds:.2f}s"
+            "Aansluiting klaar. %d/%d sluit aan. Bruto afwijking EUR %s, "
+            "netto EUR %s, niet verifieerbaar EUR %s. Risico %s. Duur %.2fs",
+            summary.matched + summary.minor_variance,
+            summary.total_ag_codes_checked,
+            f"{summary.gross_difference_eur:,.2f}",
+            f"{summary.net_difference_eur:,.2f}",
+            f"{summary.unverified_amount_eur:,.2f}",
+            summary.overall_risk_level.value,
+            summary.duration_seconds,
         )
-        
+
         return results, summary
 
     @staticmethod
     def _determine_overall_risk(results: List[MatchResult]) -> RiskLevel:
-        """Determine overall risk level from individual results."""
-        # Count by risk level
-        risk_counts = {level: 0 for level in RiskLevel}
-        
-        for result in results:
-            risk = result.risk_level()
-            risk_counts[risk] += 1
-        
-        # Highest risk determines overall
-        if risk_counts[RiskLevel.CRITICAL] > 0:
-            return RiskLevel.CRITICAL
-        elif risk_counts[RiskLevel.HIGH] > 0:
-            return RiskLevel.HIGH
-        elif risk_counts[RiskLevel.MEDIUM] > 0:
-            return RiskLevel.MEDIUM
-        else:
+        """Het hoogste individuele risico bepaalt het dossierrisico."""
+        if not results:
             return RiskLevel.LOW
+
+        niveaus = [r.risk_level() for r in results]
+        for niveau in (RiskLevel.CRITICAL, RiskLevel.HIGH, RiskLevel.MEDIUM):
+            if niveau in niveaus:
+                return niveau
+        return RiskLevel.LOW
