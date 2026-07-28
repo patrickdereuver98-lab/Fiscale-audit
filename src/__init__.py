@@ -6,6 +6,9 @@ Laagindeling, van binnen naar buiten:
     domain.py        gedeelde begrippen (status, risico, documentsoort)
     peildatum.py     periodecontrole per documentsoort
     triggers.py      wanneer is een volledige fiscale toets nodig
+    posten.py        aangifteposten, gemapt op de labels uit het rapport
+    fiscale_kern.py  tarieven en drempels per jaar, met verificatiestatus
+    omissions.py     wat in de bron staat en niet in de aangifte
     llm_json.py      JSON uit een modelantwoord halen
     anonymizer.py    persoonsgegevens maskeren voor externe aanroepen
     extractor.py     brondocumenten uitlezen (Gemini)
@@ -45,12 +48,22 @@ from .peildatum import (
 from .triggers import (
     TriggerKind, Trigger, TriggerReport, TRIGGER_DEFINITIES, missing_documents,
 )
+from .posten import POSTEN, Post, PostSoort, post_voor_label, normaliseer_label
+from .fiscale_kern import (
+    Kernwaarde, Kernwaarden, Voorstel, KernwaardeOntbreekt,
+    laad_kernwaarden, lege_kernwaarden, bewaar_in_json,
+    maak_voorstellen, pas_voorstellen_toe,
+)
 
 # Modules met een externe afhankelijkheid, pas geladen bij gebruik.
 _LAZY = {
     "DataAnonymizer": "anonymizer",
     "DocumentExtractor": "extractor",
     "ExtractedFinancialData": "extractor",
+    "check_omissies": "omissions",
+    "check_omissies_op_labels": "omissions",
+    "Omissie": "omissions",
+    "OmissieRapport": "omissions",
     "AuditMatcher": "matcher",
     "MatchResult": "matcher",
     "AuditSummary": "matcher",
@@ -94,5 +107,9 @@ __all__ = [
     "expected_document_year", "expected_reference_date",
     "TriggerKind", "Trigger", "TriggerReport", "TRIGGER_DEFINITIES",
     "missing_documents",
+    "POSTEN", "Post", "PostSoort", "post_voor_label", "normaliseer_label",
+    "Kernwaarde", "Kernwaarden", "Voorstel", "KernwaardeOntbreekt",
+    "laad_kernwaarden", "lege_kernwaarden", "bewaar_in_json",
+    "maak_voorstellen", "pas_voorstellen_toe",
     *_LAZY.keys(),
 ]

@@ -226,6 +226,72 @@ class PropertyInfo(BaseModel):
         return round(v, 0)
 
 
+class EmploymentIncome(BaseModel):
+    """Jaaropgave van loon of uitkering.
+
+    Een dossier heeft er vaak meer dan een: twee werkgevers, of loon plus een
+    uitkering. Daarom een lijst en geen enkel veld.
+    """
+
+    model_config = ConfigDict(strict=True, str_strip_whitespace=True)
+
+    employer_name: str = Field(..., min_length=2, description="Werkgever of uitkerende instantie")
+    gross_salary_eur: float = Field(..., ge=0, description="Bruto loon or benefit over the year")
+    payroll_tax_eur: float = Field(default=0, ge=0, description="Ingehouden loonheffing")
+    health_insurance_contribution_eur: Optional[float] = Field(
+        default=None, ge=0, description="Ingehouden bijdrage Zvw, if stated"
+    )
+    is_benefit: bool = Field(
+        default=False,
+        description="True for a benefit (uitkering) rather than employment income",
+    )
+    year: Optional[int] = Field(
+        default=None,
+        ge=2000,
+        description="Year the statement covers, needed for the period check",
+    )
+
+
+class InsurancePremium(BaseModel):
+    """Betaalde premie voor een verzekering, zoals een AOV.
+
+    De premie voor een arbeidsongeschiktheidsverzekering is een aftrekpost die
+    in de praktijk regelmatig wordt vergeten. Daarom apart gemodelleerd en niet
+    weggestopt in een algemeen bedrag aan aftrekposten.
+    """
+
+    model_config = ConfigDict(strict=True, str_strip_whitespace=True)
+
+    insurer_name: str = Field(..., min_length=2, description="Verzekeraar")
+    policy_kind: str = Field(
+        default="AOV",
+        description="Type: AOV, lijfrente, overlijdensrisico, anders",
+    )
+    annual_premium_eur: float = Field(..., ge=0, description="Premie over het jaar")
+    policy_number: Optional[str] = Field(default=None, description="Polisnummer")
+    year: Optional[int] = Field(default=None, ge=2000, description="Year the premium covers")
+    started_this_year: bool = Field(
+        default=False,
+        description="True if the policy started in this year; triggers a full check",
+    )
+
+
+class AnnuityInfo(BaseModel):
+    """Lijfrente: betaalde premie of ontvangen uitkering."""
+
+    model_config = ConfigDict(strict=True, str_strip_whitespace=True)
+
+    provider_name: str = Field(..., min_length=2, description="Aanbieder")
+    premium_paid_eur: Optional[float] = Field(
+        default=None, ge=0, description="Betaalde premie of inleg"
+    )
+    benefit_received_eur: Optional[float] = Field(
+        default=None, ge=0, description="Ontvangen uitkering"
+    )
+    payroll_tax_eur: float = Field(default=0, ge=0, description="Ingehouden loonheffing")
+    year: Optional[int] = Field(default=None, ge=2000, description="Year concerned")
+
+
 class ExtractedFinancialData(BaseModel):
     """Complete extracted financial data from PDF (STRICT MODE)."""
     
@@ -269,6 +335,18 @@ class ExtractedFinancialData(BaseModel):
         default=None,
         ge=0,
         description="Tax deductible items; None if not in the document"
+    )
+    employment_income: list[EmploymentIncome] = Field(
+        default_factory=list,
+        description="All jaaropgaven for salary and benefits"
+    )
+    insurance_premiums: list[InsurancePremium] = Field(
+        default_factory=list,
+        description="Paid insurance premiums, notably AOV"
+    )
+    annuities: list[AnnuityInfo] = Field(
+        default_factory=list,
+        description="Lijfrente premiums paid and benefits received"
     )
     kia_profit_eur: Optional[float] = Field(
         default=None,
@@ -392,7 +470,14 @@ class DocumentExtractor:
             RuntimeError: If all retries fail
         """
         system_prompt = """You extract financial data from DUTCH tax and financial documents
-(WOZ-beschikking, bankjaaropgave, hypotheek jaaropgave, jaarrekening, aangifte).
+(jaaropgave loon or uitkering, AOV-premieoverzicht, bankjaaropgave,
+WOZ-beschikking, hypotheek jaaropgave, nota van afrekening, jaarrekening,
+lijfrente-opgave).
+
+Report every figure the document states, also when you doubt whether it belongs
+in the return. A deduction that is present in the source but absent from the
+return is exactly what this review is meant to surface, so omitting it here
+defeats the purpose. Judging deductibility is not your task.
 
 CRITICAL: RESPOND WITH ONLY VALID JSON. NO MARKDOWN, NO EXPLANATIONS, NO TEXT.
 
@@ -434,6 +519,27 @@ Your response must be valid JSON with this exact structure:
             "annual_interest_paid_eur": 6250.0
         }
     ],
+    "employment_income": [
+        {
+            "employer_name": "Voorbeeld BV",
+            "gross_salary_eur": 62000.0,
+            "payroll_tax_eur": 21500.0,
+            "health_insurance_contribution_eur": null,
+            "is_benefit": false,
+            "year": 2024
+        }
+    ],
+    "insurance_premiums": [
+        {
+            "insurer_name": "Voorbeeld Verzekeringen",
+            "policy_kind": "AOV",
+            "annual_premium_eur": 2400.0,
+            "policy_number": "12345678",
+            "year": 2024,
+            "started_this_year": false
+        }
+    ],
+    "annuities": [],
     "business_income": null,
     "real_estate": [
         {
@@ -463,8 +569,24 @@ FIELD NOTES:
   says "50% eigendom", use 50.0. Default to 100.0 only when the document gives
   no indication of shared ownership.
 - year_valued: the "waardepeildatum" year, not the year the letter was sent.
+- gross_salary_eur: "loon", "loon uit tegenwoordige dienstbetrekking" or
+  "bruto loon" on the jaaropgave. Not the net amount and not the taxable amount
+  after deductions.
+- payroll_tax_eur: "ingehouden loonheffing" or "loonbelasting/premie
+  volksverzekeringen".
+- is_benefit: true for a payment from UWV, a pension fund or an insurer;
+  false for salary from an employer.
+- annual_premium_eur: the premium paid during the year. For an AOV this is a
+  deduction that is often overlooked, so report it whenever the document shows
+  it, even when you are unsure it is deductible. Deciding that is not your task.
+- started_this_year: true when the document states a start date, commencement
+  or first premium falling within the year covered.
+- year: the year the document covers, on every item that has the field. This
+  is used to check the document belongs to the tax year being reviewed, so
+  never guess it; use null when the document does not state it.
 - document_type: one of WOZ_beschikking, bankjaaropgave, hypotheek_jaaropgave,
-  jaarrekening, aangifte, overig.
+  jaaropgave_loon, jaaropgave_uitkering, aov_premie, lijfrente,
+  nota_van_afrekening, jaarrekening, aangifterapport, overig.
 
 RULES:
 1. All amounts are JSON numbers, never strings, never with separators

@@ -362,3 +362,84 @@ CREATE TABLE IF NOT EXISTS dossier_situaties (
 CREATE INDEX IF NOT EXISTS idx_situaties_dossier ON dossier_situaties(dossier_id);
 CREATE INDEX IF NOT EXISTS idx_situaties_doorwerking
     ON dossier_situaties(raakt_volgend_jaar, belastingjaar);
+
+
+-- ============================================================================
+-- FISCALE KERNWAARDEN
+-- ============================================================================
+-- Getallen: tarieven, drempels, schijven. Onderscheiden van fiscale_kennis, dat
+-- tekstuele regels bevat. De deterministische controles lezen hier
+-- rechtstreeks uit, zonder modelaanroep per berekening.
+--
+-- Verversen levert voorstellen op die per stuk worden goedgekeurd. Een waarde
+-- zonder laatst_geverifieerd wordt door de tool niet gebruikt: die geeft None
+-- terug in plaats van een getal, zodat een onbevestigde aanname niet
+-- ongemerkt in een fiscale conclusie belandt.
+
+CREATE TABLE IF NOT EXISTS fiscale_kernwaarden (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    sleutel TEXT NOT NULL,            -- vaste aanduiding, bijv. 'box3_forfait_spaargeld'
+    belastingjaar INTEGER NOT NULL,
+    naam TEXT NOT NULL,
+
+    -- JSONB en niet NUMERIC, omdat een deel van de waarden een schijventabel is
+    -- (eigenwoningforfait, KIA, IB-schijven) en niet een enkel getal.
+    waarde JSONB,
+    eenheid TEXT NOT NULL DEFAULT 'EUR',  -- EUR, procent, tabel, uren
+    toelichting TEXT,
+
+    bron_naam TEXT,
+    bron_url TEXT,
+    laatst_geverifieerd DATE,
+    geverifieerd_door TEXT,
+
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+
+    CONSTRAINT een_waarde_per_jaar UNIQUE (sleutel, belastingjaar),
+    CONSTRAINT geldig_kernwaardejaar
+        CHECK (belastingjaar >= 2015 AND belastingjaar <= 2100),
+    -- Geverifieerd zonder naam, datum en verwijzing kan niet: dan is er niets
+    -- om tegen na te kijken en rust het getal alleen op het model.
+    CONSTRAINT verificatie_herleidbaar CHECK (
+        laatst_geverifieerd IS NULL
+        OR (geverifieerd_door IS NOT NULL
+            AND length(trim(geverifieerd_door)) > 0
+            AND bron_url IS NOT NULL
+            AND length(trim(bron_url)) > 0)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_kernwaarden_jaar
+    ON fiscale_kernwaarden(belastingjaar);
+CREATE INDEX IF NOT EXISTS idx_kernwaarden_sleutel
+    ON fiscale_kernwaarden(sleutel, belastingjaar);
+
+-- Alleen wat bruikbaar is. De tool leest hieruit; wat hier niet in staat is
+-- nog niet nagekeken en mag geen rol spelen in een berekening.
+CREATE OR REPLACE VIEW kernwaarden_bruikbaar AS
+SELECT sleutel, belastingjaar, naam, waarde, eenheid,
+       bron_naam, bron_url, laatst_geverifieerd, geverifieerd_door
+FROM fiscale_kernwaarden
+WHERE waarde IS NOT NULL AND laatst_geverifieerd IS NOT NULL;
+
+-- Wat er nog nagekeken moet worden, oudste verificatie eerst.
+CREATE OR REPLACE VIEW kernwaarden_openstaand AS
+SELECT sleutel, belastingjaar, naam, eenheid, toelichting,
+       laatst_geverifieerd,
+       CASE
+           WHEN waarde IS NULL THEN 'Niet vastgesteld'
+           WHEN laatst_geverifieerd IS NULL THEN 'Niet geverifieerd'
+       END AS status
+FROM fiscale_kernwaarden
+WHERE waarde IS NULL OR laatst_geverifieerd IS NULL
+ORDER BY belastingjaar DESC, sleutel;
+
+COMMENT ON TABLE fiscale_kernwaarden IS
+    'Fiscale getallen per belastingjaar. Een rij zonder laatst_geverifieerd '
+    'wordt door de tool niet gebruikt; laad via de view kernwaarden_bruikbaar.';
+
+COMMENT ON COLUMN fiscale_kernwaarden.waarde IS
+    'JSONB omdat een deel van de waarden een schijventabel is en niet een '
+    'enkel getal.';
