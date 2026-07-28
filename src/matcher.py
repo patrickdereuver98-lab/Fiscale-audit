@@ -22,6 +22,10 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, ConfigDict
 
+# AuditStatus en RiskLevel komen uit domain.py, zodat er één definitie is.
+# Ze worden hier opnieuw geexporteerd omdat bestaande code ze uit matcher
+# importeert.
+from .domain import AuditStatus, RiskLevel
 from .extractor import ExtractedFinancialData
 
 
@@ -31,46 +35,6 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # ENUMS
 # ============================================================================
-
-class AuditStatus(str, Enum):
-    """Uitkomst van een aansluiting op een AG-code."""
-    MATCH = "MATCH"                      # sluit aan binnen afrondingsmarge
-    MINOR_VARIANCE = "MINOR_VARIANCE"    # klein verschil, waarschijnlijk afronding/timing
-    MISMATCH = "MISMATCH"                # echte afwijking, uitzoeken
-    MISSING_PROOF = "MISSING_PROOF"      # geen onderbouwing in de documenten
-    ERROR = "ERROR"                      # fout tijdens verwerken
-    PENDING = "PENDING"                  # nog niet verwerkt
-
-    @property
-    def label(self) -> str:
-        """Nederlandse omschrijving voor de interface."""
-        return {
-            "MATCH": "Akkoord",
-            "MINOR_VARIANCE": "Klein verschil",
-            "MISMATCH": "Afwijking",
-            "MISSING_PROOF": "Geen bewijs",
-            "ERROR": "Fout",
-            "PENDING": "In wachtrij",
-        }[self.value]
-
-
-class RiskLevel(str, Enum):
-    """Risiconiveau van een bevinding."""
-    LOW = "LOW"
-    MEDIUM = "MEDIUM"
-    HIGH = "HIGH"
-    CRITICAL = "CRITICAL"
-
-    @property
-    def label(self) -> str:
-        """Nederlandse omschrijving voor de interface."""
-        return {
-            "LOW": "Laag",
-            "MEDIUM": "Middel",
-            "HIGH": "Hoog",
-            "CRITICAL": "Kritiek",
-        }[self.value]
-
 
 class Aggregation(str, Enum):
     """Hoe een lijst met bewijsstukken tot een bedrag wordt herleid.
@@ -215,11 +179,7 @@ class MatchResult(BaseModel):
     @property
     def needs_attention(self) -> bool:
         """Of deze regel op het uitzonderingendashboard hoort."""
-        return self.status in (
-            AuditStatus.MISMATCH,
-            AuditStatus.MISSING_PROOF,
-            AuditStatus.ERROR,
-        )
+        return self.status.needs_attention
 
     def risk_level(self) -> RiskLevel:
         """Risiconiveau op basis van status en omvang van het verschil."""
@@ -611,8 +571,4 @@ class AuditMatcher:
         if not results:
             return RiskLevel.LOW
 
-        niveaus = [r.risk_level() for r in results]
-        for niveau in (RiskLevel.CRITICAL, RiskLevel.HIGH, RiskLevel.MEDIUM):
-            if niveau in niveaus:
-                return niveau
-        return RiskLevel.LOW
+        return RiskLevel.highest(r.risk_level() for r in results)

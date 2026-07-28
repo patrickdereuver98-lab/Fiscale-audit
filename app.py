@@ -27,7 +27,7 @@ try:
     from src.matcher import (
         AuditMatcher, MatchResult, AuditSummary, AuditStatus, AG_CODE_MAPPING,
     )
-    from src.advisor import FiscalAdvisor
+    from src.advisor import FiscalAdvisor, build_document_request_email
     from src.db import SupabaseClient
     from src.ui_components import (
         metric_card, metric_row, audit_summary_cards, audit_results_table,
@@ -81,6 +81,7 @@ def init_session_state() -> None:
     """Zet de sessievariabelen klaar."""
     standaard: Dict[str, Any] = {
         "extracted_data": None,
+        "extracted_data_masked": None,
         "documentnaam": None,
         "ag_codes": {},
         "audit_results": None,
@@ -312,17 +313,23 @@ def _lees_document_uit(bestand) -> None:
             extractor = get_extractor(sleutel)
             data = extractor.extract_from_pdf(tijdelijk_pad)
 
-        # Maskeer persoonsgegevens in de uitgelezen data voor verdere verwerking.
+        # Maskeer persoonsgegevens en bewaar die versie apart. De aansluiting
+        # gebruikt de originele gegevens (die heeft de bedragen nodig), maar wat
+        # naar een extern model gaat is de gemaskeerde versie. In de vorige
+        # versie werd de gemaskeerde uitkomst weggegooid en ging het origineel
+        # met rekeningnummers alsnog naar Claude.
+        st.session_state["extracted_data"] = data
+        st.session_state["extracted_data_masked"] = None
         try:
             anonymizer = DataAnonymizer()
-            anonymizer.anonymize_json(data.model_dump())
+            st.session_state["extracted_data_masked"] = anonymizer.anonymize_json(
+                data.model_dump(mode="json")
+            )
             st.session_state["anonymization_report"] = (
                 anonymizer.get_anonymization_report_json()
             )
         except Exception as exc:
-            logger.warning("Maskeren van persoonsgegevens overgeslagen: %s", exc)
-
-        st.session_state["extracted_data"] = data
+            logger.warning("Maskeren van persoonsgegevens mislukt: %s", exc)
         st.session_state["documentnaam"] = bestand.name
         progress_step(2, 2, "Gereed")
 
@@ -658,23 +665,58 @@ def render_tab_advies() -> None:
     if analyse is None:
         return
 
-    # Let op: de dataclass gebruikt Nederlandse veldnamen (overall_risk,
-    # risico_punten, klant_email_concept). Eerdere versies lazen Engelse namen
-    # die niet bestonden, waardoor dit tabblad altijd een AttributeError gaf.
+    # Een mislukte aanroep is hier zichtbaar en wordt niet als inschatting
+    # gepresenteerd. De cijfermatige aansluiting staat er onafhankelijk van.
+    if not analyse.analysis_available:
+        info_box(
+            "De inhoudelijke weging is niet gelukt"
+            + (f": {analyse.failure_reason}. " if analyse.failure_reason else ". ")
+            + "Het risiconiveau hieronder komt uit de cijfermatige aansluiting, "
+              "niet uit een inhoudelijke beoordeling.",
+            "error",
+        )
+        if st.button("Opnieuw proberen"):
+            st.session_state["risk_assessment"] = None
+            st.rerun()
+
     st.markdown("#### Inschatting")
     risk_level_indicator(analyse.overall_risk.value)
+    if analyse.analysis_available:
+        st.caption(f"Gewogen door {analyse.model}.")
 
     divider()
 
     if analyse.risico_punten:
         st.markdown("#### Bevindingen")
         for nummer, punt in enumerate(analyse.risico_punten, start=1):
-            with st.expander(f"{nummer}. {punt.titel}  ·  {punt.impact.value}"):
-                st.markdown(punt.beschrijving)
+            codes = f"  ·  {', '.join(punt.ag_codes)}" if punt.ag_codes else ""
+            kop = f"{nummer}. {punt.titel}  ·  {punt.impact.label}{codes}"
+            with st.expander(kop):
+                if punt.beschrijving:
+                    st.markdown(punt.beschrijving)
                 if punt.aanbevolen_actie:
-                    st.markdown(f"**Aanbevolen actie:** {punt.aanbevolen_actie}")
+                    st.markdown(f"**Vervolgstap:** {punt.aanbevolen_actie}")
                 if punt.referentie:
                     st.caption(f"Verwijzing: {punt.referentie}")
+
+    if analyse.ontbrekende_stukken:
+        st.markdown("#### Op te vragen stukken")
+        for stuk in analyse.ontbrekende_stukken:
+            st.markdown(f"- {stuk}")
+
+        kolom1, _ = st.columns([1, 2])
+        with kolom1:
+            st.download_button(
+                "Bericht om stukken op te vragen",
+                data=build_document_request_email(
+                    klant_naam=st.session_state["klant_naam"],
+                    ontbrekende_stukken=analyse.ontbrekende_stukken,
+                    aangiftejaar=int(st.session_state["aangiftejaar"]),
+                ),
+                file_name="opvragen_stukken.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
 
     if analyse.aanbevelingen:
         st.markdown("#### Aanbevelingen")
@@ -686,33 +728,36 @@ def render_tab_advies() -> None:
             for punt in analyse.sterke_punten:
                 st.markdown(f"- {punt}")
 
-    if analyse.waarschuwingen:
-        for waarschuwing in analyse.waarschuwingen:
-            info_box(waarschuwing, "warning")
+    for waarschuwing in analyse.waarschuwingen:
+        info_box(waarschuwing, "warning")
 
     divider()
 
     st.markdown("#### Conceptbericht aan de klant")
     info_box(
-        "Dit is een concept. Lees het na en pas het aan voordat je het verstuurt; "
-        "de tekst is opgesteld door een taalmodel en niet fiscaal getoetst.",
-        "warning",
+        "De bedragen in dit bericht komen rechtstreeks uit de aansluiting, niet "
+        "uit een taalmodel. De formulering is een concept: lees het na en pas het "
+        "aan voordat je het verstuurt.",
+        "info",
     )
 
-    concept = analyse.klant_email_concept or ""
-    tekst = copyable_text_area("Bericht", value=concept, height=380, key="concept")
-
-    st.download_button(
-        "Bericht downloaden",
-        data=tekst,
-        file_name=f"bericht_{st.session_state['klant_naam'] or 'klant'}.txt",
-        mime="text/plain",
-        use_container_width=True,
+    tekst = copyable_text_area(
+        "Bericht", value=analyse.klant_email_concept or "", height=400, key="concept"
     )
 
-    if st.button("Analyse opnieuw opstellen"):
-        st.session_state["risk_assessment"] = None
-        st.rerun()
+    kolom1, kolom2 = st.columns(2)
+    with kolom1:
+        st.download_button(
+            "Bericht downloaden",
+            data=tekst,
+            file_name=f"bericht_{st.session_state['klant_naam'] or 'klant'}.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
+    with kolom2:
+        if st.button("Analyse opnieuw opstellen", use_container_width=True):
+            st.session_state["risk_assessment"] = None
+            st.rerun()
 
 
 def _stel_analyse_op(sleutel: str) -> None:
@@ -723,7 +768,10 @@ def _stel_analyse_op(sleutel: str) -> None:
             analyse = advisor.analyze_audit(
                 results=st.session_state["audit_results"],
                 summary=st.session_state["audit_summary"],
-                extracted_data=st.session_state["extracted_data"].model_dump(mode="json"),
+                # Uitsluitend de gemaskeerde versie. Hiervan gebruikt de
+                # adviseur alleen het documenttype; de bedragen zitten al in
+                # results.
+                extracted_data=st.session_state.get("extracted_data_masked"),
                 klant_naam=st.session_state["klant_naam"] or "de klant",
                 aangiftejaar=int(st.session_state["aangiftejaar"]),
             )

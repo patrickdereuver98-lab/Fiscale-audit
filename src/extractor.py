@@ -22,6 +22,9 @@ from pydantic import BaseModel, Field, field_validator, ConfigDict, ValidationEr
 import google.generativeai as genai
 
 
+from .llm_json import extract_json_object
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -366,54 +369,15 @@ class DocumentExtractor:
             raise ValueError(f"Error reading PDF: {str(e)}")
 
     def _parse_gemini_response(self, response_text: str) -> dict:
-        """Parse Gemini response with multiple fallback strategies.
-        
-        Tries:
-        1. Direct JSON parse
-        2. Extract from markdown code block
-        3. Extract first JSON object
-        
-        Args:
-            response_text: Raw response from Gemini
-            
-        Returns:
-            Parsed JSON dictionary
-            
-        Raises:
-            ValueError: If no valid JSON found
+        """Haal het JSON-object uit het antwoord van Gemini.
+
+        Gebruikt de gedeelde parser in llm_json.py, zodat de documentlezer en
+        de adviseur dezelfde strategieen volgen. Er stonden hiervoor twee
+        implementaties met verschillende degelijkheid; de zwakkere liet de
+        adviseur omvallen op antwoorden die hier wel doorkwamen.
         """
-        if not response_text or not response_text.strip():
-            raise ValueError("Empty response from Gemini API")
+        return extract_json_object(response_text, context="Gemini-antwoord")
 
-        # Strategy 1: Direct JSON parse
-        try:
-            return json.loads(response_text)
-        except json.JSONDecodeError:
-            logger.debug("Direct JSON parse failed, trying markdown extraction...")
-
-        # Strategy 2: Extract from markdown code blocks
-        json_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", response_text)
-        if json_match:
-            try:
-                content = json_match.group(1).strip()
-                return json.loads(content)
-            except json.JSONDecodeError:
-                logger.debug("Markdown extraction failed, trying object extraction...")
-
-        # Strategy 3: Extract first JSON object
-        json_match = re.search(r"\{[\s\S]*\}", response_text)
-        if json_match:
-            try:
-                content = json_match.group(0)
-                return json.loads(content)
-            except json.JSONDecodeError:
-                logger.debug("Object extraction failed, all strategies exhausted")
-
-        # All strategies failed
-        raise ValueError(
-            f"Could not extract valid JSON from Gemini response. "
-            f"Response (first 300 chars): {response_text[:300]}"
-        )
 
     async def _extract_with_retry(self, pdf_base64: str) -> str:
         """Call Gemini API with retry logic and exponential backoff.

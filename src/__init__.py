@@ -1,38 +1,55 @@
 """
-FiscAudit AI - Automated Fiscal Audit & Reconciliation Platform
-Main package initializer
+FiscAudit AI - Geautomatiseerde fiscale aansluitcontrole
+
+Laagindeling, van binnen naar buiten:
+
+    domain.py        gedeelde begrippen (AuditStatus, RiskLevel)
+    llm_json.py      JSON uit een modelantwoord halen
+    anonymizer.py    persoonsgegevens maskeren voor externe aanroepen
+    extractor.py     brondocumenten uitlezen (Gemini)
+    matcher.py       cijfermatige aansluiting (zuiver Python, deterministisch)
+    advisor.py       inhoudelijke weging (Claude)
+    db.py            opslag (Supabase)
+    ui_components.py presentatie (Streamlit)
+
+De afhankelijkheden lopen één kant op: domain kent niemand, matcher kent
+extractor, advisor kent matcher. Zo blijft de cijfermatige kern testbaar
+zonder API-sleutels.
 """
 
-__version__ = "1.0.0"
-__author__ = "FiscAudit AI Team"
-__description__ = "An Automated AI-Driven Fiscal Audit & Reconciliation Platform for Dutch Tax Returns"
+__version__ = "2.0.0"
+__description__ = (
+    "Geautomatiseerde controle van Nederlandse belastingaangiften tegen "
+    "de onderliggende brondocumenten"
+)
 
-# ============================================================================
-# PACKAGE EXPORTS
-# ============================================================================
-
+from .domain import AuditStatus, RiskLevel
+from .llm_json import extract_json_object, JsonExtractionError
 from .anonymizer import DataAnonymizer
 from .extractor import DocumentExtractor, ExtractedFinancialData
-from .matcher import AuditMatcher, MatchResult, AuditStatus
-from .advisor import FiscalAdvisor, RiskAssessment
+from .matcher import AuditMatcher, MatchResult, AuditSummary, AG_CODE_MAPPING
+from .advisor import (
+    FiscalAdvisor, RiskAssessment, RiskPoint,
+    build_client_email, build_document_request_email,
+)
 from .db import SupabaseClient
 
 __all__ = [
+    "AuditStatus",
+    "RiskLevel",
+    "extract_json_object",
+    "JsonExtractionError",
     "DataAnonymizer",
     "DocumentExtractor",
     "ExtractedFinancialData",
     "AuditMatcher",
     "MatchResult",
-    "AuditStatus",
+    "AuditSummary",
+    "AG_CODE_MAPPING",
     "FiscalAdvisor",
     "RiskAssessment",
+    "RiskPoint",
+    "build_client_email",
+    "build_document_request_email",
     "SupabaseClient",
 ]
-
-# ============================================================================
-# VERSION INFO
-# ============================================================================
-
-def get_version():
-    """Get the current version of FiscAudit AI"""
-    return __version__
