@@ -1,63 +1,22 @@
 /**
- * FiscAudit AI - Executive Fiscal Dashboard
- * Professional Design System for Dutch Tax Professionals
- * 
- * Color System:
- *   Dark Background: #0F172A (Slate-900)
- *   Primary Action: #2563EB (Royal Blue)
- *   Success: #059669 (Emerald)
- *   Error: #DC2626 (Crimson)
- *   Warning: #D97706 (Amber)
- *   Text: #F8FAFC (Slate-50)
- *   Border: #1E293B (Slate-800)
+ * FiscAudit AI - Stijlblad
+ *
+ * De kleuren, afstanden en schaduwen staan in src/theme.py en worden door
+ * src/layout.py als :root-blok voor dit bestand geplaatst. Dit bestand
+ * verwijst er alleen naar en bevat zelf geen kleurwaarden, zodat er een plek
+ * is waar het palet wordt gewijzigd.
+ *
+ * tests/test_thema.py faalt zodra hier alsnog een kleur wordt ingetypt of
+ * wanneer er naar een variabele wordt verwezen die theme.py niet levert.
  */
 
 /* ============================================================================
    ROOT VARIABLES & THEME
    ============================================================================ */
 
-:root {
-    /* Colors */
-    --dark-bg: #0F172A;
-    --dark-bg-alt: #1E293B;
-    --dark-bg-hover: #334155;
-    --primary: #2563EB;
-    --primary-hover: #1D4ED8;
-    --primary-light: #3B82F6;
-    --success: #059669;
-    --success-light: #10B981;
-    --error: #DC2626;
-    --error-light: #EF4444;
-    --warning: #D97706;
-    --warning-light: #F59E0B;
-    --text-primary: #F8FAFC;
-    --text-secondary: #CBD5E1;
-    --text-tertiary: #94A3B8;
-    --border: #1E293B;
-    --border-light: #334155;
-    
-    /* Typography */
-    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
-    --font-mono: 'Monaco', 'Courier New', monospace;
-    
-    /* Sizing */
-    --radius-sm: 6px;
-    --radius-md: 8px;
-    --radius-lg: 12px;
-    
-    /* Shadows */
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.2);
-    --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.3);
-    --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.4);
-    
-    /* Spacing */
-    --space-xs: 4px;
-    --space-sm: 8px;
-    --space-md: 16px;
-    --space-lg: 24px;
-    --space-xl: 32px;
-}
+/* De tokens (:root) worden gegenereerd door src/theme.py en door
+   src/layout.py voor dit bestand geplaatst. Wijzig kleuren en afstanden
+   daar, niet hier. Dit bestand verwijst er alleen naar via de CSS-variabelen. */
 
 /* ============================================================================
    GLOBAL STYLES
@@ -86,7 +45,7 @@ body {
 
 /* Main app container */
 .stApp {
-    background: linear-gradient(135deg, var(--dark-bg) 0%, #1a2847 100%);
+    background: linear-gradient(135deg, var(--dark-bg) 0%, var(--dark-bg-gradient) 100%);
     color: var(--text-primary);
 }
 
@@ -151,7 +110,7 @@ p {
    ============================================================================ */
 
 .metric-card {
-    background: linear-gradient(135deg, var(--dark-bg-alt) 0%, #2d3748 100%);
+    background: linear-gradient(135deg, var(--dark-bg-alt) 0%, var(--vlak-gradient) 100%);
     border: 1px solid var(--border-light);
     border-radius: var(--radius-lg);
     padding: var(--space-lg);
@@ -303,8 +262,8 @@ button:active, .stButton button:active {
 
 .badge-missing {
     background: rgba(139, 92, 246, 0.15);
-    color: #c4b5fd;
-    border: 1px solid #9333ea;
+    color: var(--geen-bewijs-light);
+    border: 1px solid var(--geen-bewijs);
 }
 
 /* Aanvullende statusklassen, gebruikt door ui_components.status_badge */
@@ -764,7 +723,7 @@ table td,
 }
 
 .bevinding-rail.ernst-kritiek  { background: var(--error); }
-.bevinding-rail.ernst-hoog     { background: #EA580C; }
+.bevinding-rail.ernst-hoog     { background: var(--high); }
 .bevinding-rail.ernst-middel   { background: var(--warning); }
 .bevinding-rail.ernst-laag     { background: var(--success); }
 .bevinding-rail.afgehandeld    { background: var(--border-light); }
@@ -800,7 +759,7 @@ table td,
 }
 
 .bevinding-soort.ernst-kritiek { color: var(--error-light); }
-.bevinding-soort.ernst-hoog    { color: #FB923C; }
+.bevinding-soort.ernst-hoog    { color: var(--high-light); }
 .bevinding-soort.ernst-middel  { color: var(--warning-light); }
 
 .bevinding-post {
@@ -963,4 +922,125 @@ table td,
     .vergelijk { gap: var(--space-md); }
     .bevinding-ref { margin-left: 0; width: 100%; }
     .docregel-melding { margin-left: 0; width: 100%; text-align: left; }
+}
+
+/* ============================================================================
+   DOORLOPENDE INDELING
+   ============================================================================
+   Eén pagina die meeloopt met het werk: stukken erin, uitkomst eronder, dan wat
+   er moet gebeuren. Een sectie verschijnt pas als er iets te zien is, zodat het
+   beginscherm alleen de uploadvakken toont en niet een leeg dashboard.
+
+   De nummers zijn er omdat de stappen een werkelijke volgorde hebben: zonder
+   stukken kun je niet controleren en zonder controle valt er niets af te tekenen.
+   Waar die volgorde niet bestaat staat geen nummer.
+   ============================================================================ */
+
+.sectie-kop {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-md);
+    margin: var(--space-xl) 0 var(--space-lg);
+    padding-top: var(--space-lg);
+    border-top: 1px solid var(--border);
+}
+
+/* Eerste sectie hoeft geen streep boven zich: daar begint de pagina. */
+.sectie-kop:first-of-type {
+    margin-top: var(--space-md);
+    padding-top: 0;
+    border-top: none;
+}
+
+.sectie-nummer {
+    flex: 0 0 26px;
+    height: 26px;
+    margin-top: 2px;
+    border: 1px solid var(--border-light);
+    border-radius: 50%;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 24px;
+    text-align: center;
+    color: var(--text-tertiary);
+}
+
+.sectie-titel {
+    margin: 0;
+    padding: 0;
+    border: none;
+    font-size: 1.15rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+}
+
+.sectie-toelichting {
+    margin: 3px 0 0;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--text-tertiary);
+}
+
+/* Uploadvak: het moet uitnodigen, dus een streepjesrand en ruimte. */
+[data-testid="stFileUploaderDropzone"] {
+    background: var(--dark-bg-alt);
+    border: 1px dashed var(--border-light);
+    border-radius: var(--radius-md);
+    transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+[data-testid="stFileUploaderDropzone"]:hover {
+    border-color: var(--primary);
+    background: var(--dark-bg);
+}
+
+/* Compacte uitkomstband: vier cijfers op één regel, geen vier grote blokken. */
+.uitkomst {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xl);
+    padding: var(--space-md) var(--space-lg);
+    background: var(--dark-bg-alt);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-md);
+}
+
+.uitkomst-blok {
+    min-width: 130px;
+}
+
+.uitkomst-label {
+    display: block;
+    font-size: 0.68rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 3px;
+}
+
+.uitkomst-waarde {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 1.2rem;
+    font-weight: 650;
+    color: var(--text-primary);
+    line-height: 1.2;
+}
+
+.uitkomst-waarde.let-op   { color: var(--warning-light); }
+.uitkomst-waarde.fout     { color: var(--error-light); }
+.uitkomst-waarde.goed     { color: var(--success-light); }
+
+.uitkomst-onder {
+    display: block;
+    margin-top: 2px;
+    font-size: 0.74rem;
+    color: var(--text-tertiary);
+}
+
+@media (max-width: 640px) {
+    .uitkomst { gap: var(--space-md); }
+    .uitkomst-blok { min-width: 44%; }
+    .sectie-kop { gap: var(--space-sm); }
 }

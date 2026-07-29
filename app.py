@@ -36,9 +36,10 @@ try:
     from src.peildatum import check_document_period, PERIOD_RULES
     from src.triggers import TRIGGER_DEFINITIES, TriggerKind, Trigger, TriggerReport
     from src.advisor import FiscalAdvisor, build_document_request_email
+    from src.layout import stel_pagina_in, sectie
     from src.ui_components import (
         dossierband, bevinding_kaart, alles_akkoord, documentregel,
-        info_box, divider, metric_row, copyable_text_area,
+        info_box, divider, uitkomstband, copyable_text_area,
         format_currency, format_count, format_percentage, risk_level_indicator,
     )
 except ImportError as exc:
@@ -53,25 +54,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-st.set_page_config(
-    page_title="FiscAudit AI",
-    page_icon="📋",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-
-def load_css() -> None:
-    """Laad het stijlblad."""
-    pad = os.path.join(os.path.dirname(__file__), "assets", "style.css")
-    try:
-        with open(pad, "r", encoding="utf-8") as bestand:
-            st.markdown(f"<style>{bestand.read()}</style>", unsafe_allow_html=True)
-    except OSError as exc:
-        logger.warning("Stijlblad niet geladen: %s", exc)
-
-
-load_css()
+# Paginaopzet en opmaak in één aanroep. Moet voor elke andere
+# Streamlit-aanroep staan.
+stel_pagina_in(titel="Controle", icoon="📋")
 
 
 # ============================================================================
@@ -244,15 +229,14 @@ def _is_afgehandeld(sleutel: str) -> bool:
 
 
 # ============================================================================
-# TAB 1 - INVOER
+# SECTIE 1 - STUKKEN EN AANGIFTE
 # ============================================================================
 
-def render_tab_invoer() -> None:
-    """Brondocumenten en aangifterapport inlezen."""
-    st.markdown("## Invoer")
-    st.caption(
-        "Lever beide kanten aan: de stukken van de klant en het aangifterapport "
-        "van de adviseur. De tool legt ze naast elkaar."
+def render_sectie_invoer() -> None:
+    """Sectie 1: brondocumenten en aangifterapport inlezen."""
+    sectie(
+        1, "Stukken en aangifte",
+        "Lever beide kanten aan. De tool legt ze naast elkaar.",
     )
 
     kolom_bron, kolom_aangifte = st.columns(2)
@@ -558,7 +542,7 @@ def _voer_controle_uit() -> None:
             info_box("Alles sluit aan. Er is geen uitzoekwerk.", "success")
         else:
             info_box(
-                f"{aandacht} punten vragen aandacht. Ga naar het werkprogramma.",
+                f"{aandacht} punten vragen aandacht. Ze staan hieronder.",
                 "warning",
             )
         st.rerun()
@@ -646,18 +630,11 @@ def _herken_documentsoort(doc: Dict[str, Any]) -> DocumentKind:
 
 
 # ============================================================================
-# TAB 2 - WERKPROGRAMMA
+# SECTIE 3 - WAT ER MOET GEBEUREN
 # ============================================================================
 
-def render_tab_werkprogramma() -> None:
-    """De lijst die de reviewer afwerkt."""
-    if st.session_state["match_resultaten"] is None:
-        st.markdown("## Werkprogramma")
-        info_box(
-            "Er is nog geen controle uitgevoerd. Begin bij Invoer.", "info"
-        )
-        return
-
+def render_sectie_bevindingen() -> None:
+    """Sectie 3: de lijst die de reviewer afwerkt."""
     bevindingen = _alle_bevindingen()
     afgehandeld = sum(1 for b in bevindingen if _is_afgehandeld(b["sleutel"]))
 
@@ -695,38 +672,41 @@ def render_tab_werkprogramma() -> None:
 
 
 def _render_cijfers() -> None:
-    """Compacte cijfers onder de kopband."""
+    """De kerncijfers als compacte band.
+
+    Kleur volgt de betekenis en niet de opmaak: een bedrag van nul bij gemiste
+    aftrek is goed nieuws en hoort niet rood te zijn.
+    """
     samenvatting: AuditSummary = st.session_state["match_samenvatting"]
     omissies: OmissieRapport = st.session_state["omissie_rapport"]
 
-    metric_row([
+    uitkomstband([
         {
             "label": "Sluit aan",
-            "value": format_percentage(samenvatting.match_rate),
-            "delta": f"{samenvatting.matched + samenvatting.minor_variance} van "
+            "waarde": format_percentage(samenvatting.match_rate),
+            "onder": f"{samenvatting.matched + samenvatting.minor_variance} van "
                      f"{samenvatting.total_ag_codes_checked} posten",
-            "icon": "",
+            "toon": "goed" if samenvatting.match_rate >= 100 else "",
         },
         {
             "label": "Bruto afwijking",
-            "value": format_currency(samenvatting.gross_difference_eur),
-            "delta": f"saldo {format_currency(samenvatting.net_difference_eur)}",
-            "icon": "",
-            "tooltip": "Som van de absolute verschillen",
+            "waarde": format_currency(samenvatting.gross_difference_eur),
+            "onder": f"saldo {format_currency(samenvatting.net_difference_eur)}",
+            "toon": "fout" if samenvatting.gross_difference_eur > 0 else "goed",
         },
         {
             "label": "Gemiste aftrek",
-            "value": format_currency(omissies.gemiste_aftrek_eur),
-            "delta": "klant betaalt te veel",
-            "icon": "",
+            "waarde": format_currency(omissies.gemiste_aftrek_eur),
+            "onder": "klant betaalt te veel",
+            "toon": "let-op" if omissies.gemiste_aftrek_eur > 0 else "goed",
         },
         {
             "label": "Te laag aangegeven",
-            "value": format_currency(omissies.te_laag_aangegeven_eur),
-            "delta": "risico op correctie",
-            "icon": "",
+            "waarde": format_currency(omissies.te_laag_aangegeven_eur),
+            "onder": "risico op correctie",
+            "toon": "fout" if omissies.te_laag_aangegeven_eur > 0 else "goed",
         },
-    ], columns=4)
+    ])
 
 
 def _render_bevinding(bevinding: Dict[str, Any], afgehandeld: bool) -> None:
@@ -865,16 +845,13 @@ def _render_export(bevindingen: List[Dict[str, Any]]) -> None:
 
 
 # ============================================================================
-# TAB 3 - TOELICHTING EN BERICHT
+# SECTIE 4 - TOELICHTING EN BERICHT
 # ============================================================================
 
-def render_tab_toelichting() -> None:
-    """Inhoudelijke weging en het bericht aan de klant."""
-    st.markdown("## Toelichting en bericht")
-
-    if st.session_state["match_resultaten"] is None:
-        info_box("Voer eerst een controle uit.", "info")
-        return
+def render_sectie_toelichting() -> None:
+    """Sectie 4: inhoudelijke weging en het bericht aan de klant."""
+    sectie(4, "Toelichting en bericht",
+           "Fiscale weging van de bijzondere situaties, en het concept aan de klant.")
 
     triggers: Optional[TriggerReport] = st.session_state["triggers"]
     heeft_situatie = bool(triggers and triggers.needs_fiscal_analysis)
@@ -884,7 +861,7 @@ def render_tab_toelichting() -> None:
             "Er is geen bijzondere situatie aangevinkt, dus er is geen "
             "inhoudelijke toets nodig. De cijfermatige controle in het "
             "werkprogramma is volledig. Vink bij Invoer een situatie aan als er "
-            "dit jaar iets is gebeurd dat fiscaal weging vraagt.",
+            "dit jaar iets is gebeurd dat fiscale weging vraagt.",
             "info",
         )
 
@@ -1063,7 +1040,17 @@ def render_sidebar() -> None:
 # ============================================================================
 
 def main() -> None:
-    """Bouw de pagina op."""
+    """Bouw de pagina op.
+
+    Eén doorlopende pagina in plaats van tabbladen. Een sectie verschijnt pas
+    wanneer er iets te zien is, dus bij het openen staan alleen de uploadvakken
+    en niet een leeg dashboard met vier nullen. Zodra de controle heeft gelopen
+    staat de hele uitkomst onder elkaar en hoef je nergens op te klikken om te
+    zien wat er aan de hand is.
+
+    De Data Monitor blijft een aparte pagina: dat is beheer en geen onderdeel
+    van deze doorloop.
+    """
     render_sidebar()
 
     st.markdown("# FiscAudit AI")
@@ -1073,15 +1060,33 @@ def main() -> None:
         "een model leest alleen de documenten en weegt de bijzondere situaties."
     )
 
-    tab_invoer, tab_werk, tab_toelichting = st.tabs(
-        ["Invoer", "Werkprogramma", "Toelichting en bericht"]
+    # 1. altijd zichtbaar: hier begint het werk
+    render_sectie_invoer()
+
+    is_gecontroleerd = st.session_state["match_resultaten"] is not None
+
+    if not is_gecontroleerd:
+        # Geen lege secties met nullen eronder; die suggereren een uitkomst die
+        # er niet is.
+        return
+
+    # 2 en 3: uitkomst en wat er moet gebeuren
+    sectie(2, "Uitkomst",
+           f"Gecontroleerd op {st.session_state['gecontroleerd_op']}.")
+    _render_cijfers()
+
+    bevindingen = _alle_bevindingen()
+    afgehandeld = sum(1 for b in bevindingen if _is_afgehandeld(b["sleutel"]))
+
+    sectie(
+        3, "Wat er moet gebeuren",
+        f"{len(bevindingen) - afgehandeld} open, {afgehandeld} afgehandeld."
+        if bevindingen else "Niets. Alles sluit aan.",
     )
-    with tab_invoer:
-        render_tab_invoer()
-    with tab_werk:
-        render_tab_werkprogramma()
-    with tab_toelichting:
-        render_tab_toelichting()
+    render_sectie_bevindingen()
+
+    # 4: alleen relevant wanneer er een bijzondere situatie is aangevinkt
+    render_sectie_toelichting()
 
 
 if __name__ == "__main__":

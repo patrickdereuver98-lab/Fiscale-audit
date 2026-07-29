@@ -10,6 +10,8 @@ from typing import Optional, List, Dict, Any
 
 import streamlit as st
 
+from .theme import KLEUR, RISICO_KLEUR
+
 
 # ============================================================================
 # OPMAAK VAN GETALLEN (Nederlandse notatie)
@@ -132,25 +134,25 @@ def status_badge(status: str) -> str:
     return f'<span class="badge {cfg["class"]}">{cfg["icon"]} {cfg["label"]}</span>'
 
 
+# Kleuren komen uit theme.py; alleen icoon en label staan hier.
 RISK_CONFIG = {
-    "LOW":      {"icon": "🟢", "label": "Laag risico",    "color": "#059669"},
-    "MEDIUM":   {"icon": "🟡", "label": "Middelmatig risico", "color": "#D97706"},
-    "HIGH":     {"icon": "🟠", "label": "Hoog risico",    "color": "#EA580C"},
-    "CRITICAL": {"icon": "🔴", "label": "Kritiek risico", "color": "#DC2626"},
+    "LOW":      {"icon": "🟢", "label": "Laag risico"},
+    "MEDIUM":   {"icon": "🟡", "label": "Middelmatig risico"},
+    "HIGH":     {"icon": "🟠", "label": "Hoog risico"},
+    "CRITICAL": {"icon": "🔴", "label": "Kritiek risico"},
 }
 
 
 def risk_level_indicator(risk_level: str) -> None:
     """Risiconiveau als gekleurd blok."""
     cfg = RISK_CONFIG.get(risk_level, RISK_CONFIG["HIGH"])
-    kleur = cfg["color"]
-    r, g, b = int(kleur[1:3], 16), int(kleur[3:5], 16), int(kleur[5:7], 16)
+    kleur = RISICO_KLEUR.get(risk_level, KLEUR.hoog)
 
     st.markdown(
         f"""
         <div style="display:inline-flex;align-items:center;gap:8px;
-                    padding:12px 20px;border-radius:8px;
-                    background:rgba({r},{g},{b},0.12);
+                    padding:12px 20px;border-radius:{"8px"};
+                    background:{KLEUR.rgba(kleur, 0.12)};
                     border:1px solid {kleur};color:{kleur};
                     font-weight:600;font-size:1.05rem;">
             {cfg['icon']} {cfg['label']}
@@ -183,7 +185,7 @@ def info_box(message: str, box_type: str = "info") -> None:
 def divider(spacing: int = 20) -> None:
     """Scheidingslijn."""
     st.markdown(
-        f'<div style="margin:{spacing}px 0;border-top:1px solid #1E293B;"></div>',
+        f'<div style="margin:{spacing}px 0;border-top:1px solid {KLEUR.rand};"></div>',
         unsafe_allow_html=True,
     )
 
@@ -204,15 +206,15 @@ def progress_step(current: int, total: int, label: str = "") -> None:
         f"""
         <div style="margin-bottom:16px;">
             <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
-                <span style="font-size:0.875rem;color:#CBD5E1;">
+                <span style="font-size:0.875rem;color:{KLEUR.tekst_zacht};">
                     Stap {current} van {total}
                 </span>
-                <span style="font-size:0.875rem;color:#94A3B8;">{label}</span>
+                <span style="font-size:0.875rem;color:{KLEUR.tekst_zachtst};">{label}</span>
             </div>
-            <div style="width:100%;height:6px;background:#1E293B;
+            <div style="width:100%;height:6px;background:{KLEUR.rand};
                         border-radius:3px;overflow:hidden;">
                 <div style="width:{fractie * 100:.0f}%;height:100%;
-                            background:linear-gradient(90deg,#2563EB,#3B82F6);
+                            background:linear-gradient(90deg,{KLEUR.primair},{KLEUR.primair_licht});
                             border-radius:3px;"></div>
             </div>
         </div>
@@ -544,5 +546,32 @@ def documentregel(jaar: Optional[int], naam: str, melding: str = "") -> None:
             {f'<span class="docregel-melding">{melding}</span>' if melding else ""}
         </div>
         """,
+        unsafe_allow_html=True,
+    )
+
+
+def uitkomstband(blokken: List[Dict[str, Any]]) -> None:
+    """Compacte band met de kerncijfers.
+
+    Vier cijfers op één regel in plaats van vier grote blokken. Wie een controle
+    heeft laten lopen wil weten of er werk is, niet een scorebord bekijken.
+
+    Args:
+        blokken: Elk met `label`, `waarde` en optioneel `onder` en `toon`
+            ("goed", "let-op", "fout").
+    """
+    inhoud = []
+    for blok in blokken:
+        toon = blok.get("toon", "")
+        onder = blok.get("onder", "")
+        inhoud.append(
+            '<div class="uitkomst-blok">'
+            f'<span class="uitkomst-label">{blok["label"]}</span>'
+            f'<span class="uitkomst-waarde {toon}">{blok["waarde"]}</span>'
+            + (f'<span class="uitkomst-onder">{onder}</span>' if onder else "")
+            + "</div>"
+        )
+    st.markdown(
+        f'<div class="uitkomst">{"".join(inhoud)}</div>',
         unsafe_allow_html=True,
     )

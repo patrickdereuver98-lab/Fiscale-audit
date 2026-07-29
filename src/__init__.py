@@ -3,6 +3,8 @@ FiscAudit AI - Geautomatiseerde controle van een aangifte tegen de brondocumente
 
 Laagindeling, van binnen naar buiten:
 
+    theme.py         kleuren, afstanden en letters: een plek voor het palet
+    layout.py        paginaopzet en opmaak, een aanroep per pagina
     domain.py        gedeelde begrippen (status, risico, documentsoort)
     peildatum.py     periodecontrole per documentsoort
     triggers.py      wanneer is een volledige fiscale toets nodig
@@ -38,6 +40,7 @@ __description__ = (
 )
 
 # Zuivere logica, veilig om direct te importeren.
+from .theme import KLEUR, RISICO_KLEUR, css_variabelen, streamlit_thema
 from .domain import (
     AuditStatus, RiskLevel, ReviewStatus, FindingKind, DocumentKind,
 )
@@ -61,6 +64,9 @@ _LAZY = {
     "DataAnonymizer": "anonymizer",
     "DocumentExtractor": "extractor",
     "ExtractedFinancialData": "extractor",
+    "stel_pagina_in": "layout",
+    "pas_opmaak_toe": "layout",
+    "sectie": "layout",
     "Aangifte": "aangifte_lezer",
     "lees_aangifte_docx": "aangifte_lezer",
     "koppel_aan_posten": "aangifte_lezer",
@@ -104,6 +110,7 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "KLEUR", "RISICO_KLEUR", "css_variabelen", "streamlit_thema",
     "AuditStatus", "RiskLevel", "ReviewStatus", "FindingKind", "DocumentKind",
     "extract_json_object", "JsonExtractionError",
     "PeriodCheck", "check_document_period", "check_all_documents",

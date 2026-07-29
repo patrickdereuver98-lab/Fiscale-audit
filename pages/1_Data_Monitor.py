@@ -16,13 +16,12 @@ from datetime import date
 
 import streamlit as st
 
-st.set_page_config(
-    page_title="FiscAudit AI - Data Monitor",
-    page_icon="🔧",
-    layout="wide",
-)
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.layout import stel_pagina_in, sectie
+
+# Paginaopzet en opmaak in één aanroep, dezelfde als de hoofdpagina.
+stel_pagina_in(titel="Data Monitor", icoon="🔧")
 
 from src.fiscale_kern import (
     laad_kernwaarden, bewaar_in_json, lege_kernwaarden,
@@ -31,21 +30,7 @@ from src.fiscale_kern import (
 from src.triggers import TRIGGER_DEFINITIES, TriggerKind
 from src.posten import POSTEN, PostSoort
 from src.peildatum import PERIOD_RULES
-from src.ui_components import info_box, divider, metric_row, format_count
-
-
-def load_css() -> None:
-    """Laad het stijlblad van de hoofdapplicatie."""
-    pad = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "assets", "style.css")
-    try:
-        with open(pad, "r", encoding="utf-8") as bestand:
-            st.markdown(f"<style>{bestand.read()}</style>", unsafe_allow_html=True)
-    except OSError:
-        pass
-
-
-load_css()
+from src.ui_components import info_box, divider, uitkomstband, format_count
 
 
 def get_secret(*names: str):
@@ -86,17 +71,26 @@ def render_kernwaarden() -> None:
 
     kern = laad_kernwaarden(jaar)
 
-    metric_row([
-        {"label": "Bruikbaar", "value": format_count(kern.aantal_bruikbaar), "icon": "✅"},
-        {"label": "Nog nakijken", "value": format_count(kern.aantal_ontbreekt), "icon": "⬜"},
+    uitkomstband([
+        {
+            "label": "Bruikbaar",
+            "waarde": format_count(kern.aantal_bruikbaar),
+            "onder": "nagekeken en in gebruik",
+            "toon": "goed" if kern.is_volledig else "",
+        },
+        {
+            "label": "Nog nakijken",
+            "waarde": format_count(kern.aantal_ontbreekt),
+            "onder": "worden niet gebruikt",
+            "toon": "let-op" if kern.aantal_ontbreekt else "goed",
+        },
         {
             "label": "Bron",
-            "value": {"supabase": "Supabase", "json": "Bestand", "leeg": "Geen"}.get(
-                kern.bron, kern.bron
-            ),
-            "icon": "🗄️",
+            "waarde": {"supabase": "Supabase", "json": "Bestand",
+                       "leeg": "Geen"}.get(kern.bron, kern.bron),
+            "onder": "waar de waarden vandaan komen",
         },
-    ], columns=3)
+    ])
 
     if kern.bron == "leeg":
         info_box(
