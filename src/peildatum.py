@@ -7,11 +7,17 @@ afwijkingen uitzien: een bankoverzicht per 31-12-2024 naast een aangifte 2024
 geeft over de hele box 3 een verschil, terwijl er niets mis is met de aangifte.
 Alleen het verkeerde document is aangeleverd.
 
-Box 3 gaat over de peildatum 1 januari van het aangiftejaar. Het saldo per
-1-1-2024 is hetzelfde bedrag als het eindsaldo per 31-12-2023. Voor aangifte
-2024 hoort dus het overzicht van boekjaar 2023, terwijl inkomensstukken over
-het kalenderjaar 2024 gaan. Die twee lopen een jaar uit elkaar en dat is de
-meest voorkomende verwisseling.
+Box 3 gaat over de peildatum 1 januari van het aangiftejaar.
+
+Een eerdere versie leidde daaruit af dat je voor aangifte 2024 het bankoverzicht
+van 2023 nodig hebt. Dat is onjuist en het bleek op een echt dossier: het
+financieel jaaroverzicht 2024 van een Nederlandse bank vermeldt zowel het saldo
+per 1 januari 2024 als per 31 december 2024. Het juiste document is dus dat van
+het aangiftejaar zelf; wat ertoe doet is welke kolom je leest. De oude regel zou
+elk correct aangeleverd overzicht als verkeerd jaar hebben gemeld.
+
+De kolomkeuze zit in aangifte_lezer.py. Deze module controleert alleen of het
+document bij het jaar hoort.
 
 TE BEVESTIGEN
 De verwachte periode per documentsoort staat in PERIOD_RULES. De regels voor
@@ -87,11 +93,12 @@ PERIOD_RULES: Dict[DocumentKind, PeriodRule] = {
     # ervoor, dus offset -1 op het boekjaar van het overzicht.
 
     DocumentKind.BANKOVERZICHT: PeriodRule(
-        year_offset=-1,
+        year_offset=0,
         is_point_in_time=True,
         toelichting=(
-            "Box 3 gaat over de peildatum 1 januari van het aangiftejaar, "
-            "wat gelijk is aan het eindsaldo per 31 december van het jaar ervoor"
+            "Box 3 gaat over de peildatum 1 januari van het aangiftejaar. Het "
+            "financieel jaaroverzicht van datzelfde jaar vermeldt zowel het "
+            "saldo per 1 januari als per 31 december; de eerste is de juiste"
         ),
     ),
 
@@ -111,10 +118,10 @@ PERIOD_RULES: Dict[DocumentKind, PeriodRule] = {
         year_offset=0,
         is_point_in_time=False,
         toelichting=(
-            "De betaalde rente betreft het aangiftejaar; de restschuld op "
-            "dezelfde opgave hoort bij de peildatum en kan een ander jaar betreffen"
+            "De jaaropgave van het aangiftejaar vermeldt de rente over dat jaar "
+            "en de schuld per 31 december; beide horen bij deze aangifte"
         ),
-        confirmed=False,
+        confirmed=True,  # nagelopen op een echte jaaropgave
     ),
 
     # ---------------- documenten zonder vaste periode ----------------

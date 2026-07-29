@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import tempfile
+from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -29,7 +30,7 @@ try:
     )
     from src.anonymizer import DataAnonymizer
     from src.extractor import DocumentExtractor, ExtractedFinancialData
-    from src.aangifte_lezer import Aangifte, lees_aangifte_docx, koppel_aan_posten
+    from src.aangifte_lezer import Aangifte, lees_aangifte, koppel_aan_posten
     from src.posten import POSTEN, PostSoort
     from src.matcher import AuditMatcher, MatchResult, AuditSummary
     from src.omissions import check_omissies, OmissieRapport
@@ -279,15 +280,19 @@ def render_sectie_invoer() -> None:
 
         rapport = st.file_uploader(
             "Sleep het rapport hierheen",
-            type=["docx", "pdf"],
+            type=["docx", "rtf", "pdf"],
             key="upload_aangifte",
             label_visibility="collapsed",
         )
 
         if rapport is not None:
-            is_word = rapport.name.lower().endswith(".docx")
-            if is_word:
-                info_box("Word: exacte uitlezing, geen leesfout mogelijk.", "success")
+            is_exact = rapport.name.lower().endswith((".docx", ".rtf"))
+            if is_exact:
+                info_box(
+                    "Word of RTF: exacte uitlezing zonder model, dus geen "
+                    "leesfout aan de aangiftekant.",
+                    "success",
+                )
             else:
                 info_box(
                     "PDF: een model leest het rapport. Weeg een verschil met "
@@ -299,9 +304,9 @@ def render_sectie_invoer() -> None:
                 "Rapport lezen",
                 type="primary",
                 use_container_width=True,
-                disabled=not (is_word or gemini_key()),
+                disabled=not (is_exact or gemini_key()),
             ):
-                _lees_aangifterapport(rapport, is_word)
+                _lees_aangifterapport(rapport, is_exact)
 
         if st.session_state["aangifte"] is not None:
             _toon_aangifte()
@@ -371,23 +376,25 @@ def _bepaal_jaar(data: ExtractedFinancialData) -> Optional[int]:
     return None
 
 
-def _lees_aangifterapport(bestand, is_word: bool) -> None:
+def _lees_aangifterapport(bestand, is_exact: bool) -> None:
     """Lees het aangifterapport en koppel de regels aan de posten."""
-    if not is_word:
+    if not is_exact:
         info_box(
             "Het lezen van een PDF-rapport is nog niet aangesloten. Exporteer "
-            "het rapport als Word; dat gaat bovendien exact.",
+            "het rapport als Word of RTF; dat gaat bovendien exact, zonder "
+            "leesonzekerheid aan de aangiftekant.",
             "warning",
         )
         return
 
     tijdelijk_pad = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tijdelijk:
+        achtervoegsel = Path(bestand.name).suffix.lower()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=achtervoegsel) as tijdelijk:
             tijdelijk.write(bestand.getbuffer())
             tijdelijk_pad = tijdelijk.name
 
-        aangifte = lees_aangifte_docx(tijdelijk_pad)
+        aangifte = lees_aangifte(tijdelijk_pad)
         aangifte.bestandsnaam = bestand.name
         per_post, onbekend = koppel_aan_posten(aangifte)
 

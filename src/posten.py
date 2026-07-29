@@ -235,6 +235,12 @@ class Post:
     toelichting: str = ""
     is_benadering: bool = False
     omissie_melden: bool = True
+    # Welke kolom van het rapport bij deze post hoort wanneer er twee staan.
+    # Box 3 gaat over 1 januari, dus daar de beginstand. Maar de
+    # hypotheekjaaropgave geeft de schuld per 31 december, dus daar moet tegen
+    # de eindstand worden vergeleken; anders levert een kloppend dossier een
+    # verschil op ter grootte van de aflossing over het jaar.
+    gebruik_eindstand: bool = False
 
 
 POSTEN: Dict[str, Post] = {
@@ -281,7 +287,14 @@ POSTEN: Dict[str, Post] = {
         key="winst_onderneming",
         naam="Bruto ondernemingsresultaat",
         soort=PostSoort.INKOMEN,
+        # Volgorde is voorkeur. "Winst volgens jaarrekening" staat vooraan
+        # omdat dat het getal is dat tegen de jaarrekening wordt gecontroleerd.
+        # De belastbare winst staat verderop in het rapport en is die na
+        # ondernemersaftrek en winstvrijstelling, dus een ander bedrag dat niet
+        # met de jaarrekening hoort aan te sluiten.
         aangifte_labels=[
+            "Winst volgens jaarrekening",
+            "Winst uit ondernemerschap",
             "Winst uit onderneming", "Bruto winst", "Omzet",
             "Netto omzet", "Resultaat onderneming",
         ],
@@ -310,6 +323,14 @@ POSTEN: Dict[str, Post] = {
             "Betaalde AOV-premie", "AOV-premie", "Premie AOV",
             "Premie arbeidsongeschiktheidsverzekering",
             "Betaalde premie arbeidsongeschiktheidsverzekering",
+            # Zoals het in een echt rapport staat, in het meervoud. De
+            # specifieke regel gaat voor de bredere container: onder
+            # inkomensvoorzieningen kan ook een lijfrente vallen.
+            "Premies arbeidsongeschiktheidsverzekeringen "
+            "(geen Zorgverzekeringswet)",
+            "Premies arbeidsongeschiktheidsverzekeringen",
+            "Totaal uitgaven voor inkomensvoorzieningen",
+            "Premies voor inkomensvoorzieningen",
         ],
         herleiden=_som_aov_premie,
         toelichting=(
@@ -340,6 +361,9 @@ POSTEN: Dict[str, Post] = {
         aangifte_labels=[
             "Betaalde hypotheekrente", "Hypotheekrente", "Rente eigenwoningschuld",
             "Betaalde rente eigen woning", "Rente en kosten eigenwoningschuld",
+            # Zoals het in een echt rapport staat, onder de eigen woning.
+            "Totaal aftrekposten van de eigen woning",
+            "Aftrekbaar bedrag betaalde rente",
         ],
         herleiden=_som_hypotheekrente,
         toelichting="Betaalde rente volgens de hypotheekjaaropgave",
@@ -393,7 +417,8 @@ POSTEN: Dict[str, Post] = {
         soort=PostSoort.BEZITTING,
         aangifte_labels=[
             "WOZ-waarde woning", "WOZ-waarde eigen woning", "WOZ-waarde",
-            "Eigenwoningforfait", "Vastgestelde waarde woning",
+            "Vastgestelde waarde woning",
+            "Waarde van de woning (WOZ-waarde)",
         ],
         herleiden=_som_woz,
         toelichting=(
@@ -402,11 +427,32 @@ POSTEN: Dict[str, Post] = {
         ),
     ),
 
+    "eigenwoningforfait": Post(
+        key="eigenwoningforfait",
+        naam="Eigenwoningforfait",
+        soort=PostSoort.INKOMEN,
+        aangifte_labels=[
+            "Eigenwoningforfait",
+            "Totaal inkomsten uit de eigen woning",
+        ],
+        # Volgt uit de WOZ-waarde via een schijventabel die per jaar wijzigt en
+        # die in de kernwaarden staat, niet hier. Zonder geverifieerde tabel is
+        # deze post niet na te rekenen en levert hij geen bevinding op.
+        herleiden=lambda data: None,
+        toelichting=(
+            "Wordt berekend uit de WOZ-waarde. Narekenen vraagt de "
+            "forfaittabel van het aangiftejaar uit de kernwaarden"
+        ),
+    ),
+
     "eigenwoningschuld": Post(
         key="eigenwoningschuld",
         naam="Eigenwoningschuld",
         soort=PostSoort.SCHULD,
+        gebruik_eindstand=True,
         aangifte_labels=[
+            "Eigenwoningschuld van aftrekbare geldleningen",
+            "Totaal eigenwoningschulden",
             "Eigenwoningschuld", "Hypotheekschuld eigen woning",
             "Restschuld eigen woning", "Schuld eigen woning",
         ],
@@ -423,6 +469,12 @@ POSTEN: Dict[str, Post] = {
         aangifte_labels=[
             "Bank- en spaartegoeden", "Banktegoeden", "Spaartegoeden",
             "Bankrekeningen", "Saldo bank- en spaarrekeningen",
+            # Zoals het in een echt rapport staat. Premiedepots vallen onder
+            # dezelfde post, dus een verschil met de bankoverzichten kan een
+            # premiedepot zijn waarvoor het stuk nog ontbreekt.
+            "Totaal premiedepots, bank- en spaartegoeden in Nederland "
+            "(excl. groene beleggingen)",
+            "Premiedepots, bank- en spaartegoeden in Nederland",
         ],
         herleiden=_som_banksaldo,
         toelichting=(

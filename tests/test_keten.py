@@ -23,10 +23,9 @@ for m,a in [("supabase.lib",None),("supabase.lib.client_options","ClientOptions"
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from docx import Document
 from src.extractor import (ExtractedFinancialData, BankBalance, PropertyInfo,
                            MortgageInfo, EmploymentIncome, InsurancePremium)
-from src.aangifte_lezer import lees_aangifte_docx, koppel_aan_posten
+from src.aangifte_lezer import lees_aangifte_tekst, koppel_aan_posten
 from src.matcher import AuditMatcher
 from src.omissions import check_omissies
 from src.peildatum import check_document_period
@@ -34,24 +33,21 @@ from src.domain import DocumentKind, FindingKind, ReviewStatus, AuditStatus, Ris
 from src.triggers import TriggerKind, Trigger, TriggerReport, missing_documents
 
 # --- aangifterapport met bewust drie fouten erin ---
-doc = Document()
-doc.add_paragraph('Aangiftejaar 2024')
-t = doc.add_table(rows=0, cols=2)
-for label, bedrag in [
-    ('Bruto loon', '15.234,00'),            # cijferomzetting: moet 51.234 zijn
-    ('Ingehouden loonheffing', '18.900,00'),
-    ('Bank- en spaartegoeden', '52.000,00'),
-    ('WOZ-waarde woning', '480.000,00'),
-    # AOV-premie ontbreekt volledig
-]:
-    r = t.add_row().cells
-    r[0].text, r[1].text = label, bedrag
-with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as f: pad = f.name
-doc.save(pad)
+# Verzonnen gegevens in de vorm van een echt rapport: tabgescheiden, hele
+# euro's met een punt als duizendscheiding.
+RAPPORT = "\n".join([
+    "Aangifte inkomstenbelasting 2024",
+    "Belastbaar inkomen uit werk en woning (BOX 1)",
+    "Bruto loon\t15.234",              # cijferomzetting: hoort 51.234 te zijn
+    "Ingehouden loonheffing\t18.900",
+    "Belastbaar inkomen uit sparen en beleggen (BOX 3)",
+    "Bank- en spaartegoeden\t52.000",
+    "WOZ-waarde woning\t480.000",
+    # de AOV-premie ontbreekt volledig
+])
 
-aangifte = lees_aangifte_docx(pad)
+aangifte = lees_aangifte_tekst(RAPPORT, bestandsnaam="voorbeeld.rtf")
 per_post, onbekend = koppel_aan_posten(aangifte)
-os.unlink(pad)
 
 # --- brondocumenten ---
 bron = ExtractedFinancialData(
@@ -68,7 +64,7 @@ bron = ExtractedFinancialData(
 
 res, sam = AuditMatcher().match_ag_codes(bron, per_post)
 om = check_omissies(bron, per_post)
-periode = check_document_period(DocumentKind.BANKOVERZICHT, 2024, 2024)
+periode = check_document_period(DocumentKind.BANKOVERZICHT, 2024, 2022)
 
 print("=" * 68)
 print("ROOKTEST: drie ingebouwde fouten, worden ze alle drie gevonden?")

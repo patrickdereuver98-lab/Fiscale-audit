@@ -32,14 +32,19 @@ def check(naam, voorwaarde, toelichting=""):
 print("=" * 72)
 print("Peildatum: box 3 loopt een jaar achter op het inkomen")
 print("=" * 72)
-check("bankoverzicht voor aangifte 2024 hoort over 2023 te gaan",
-      expected_document_year(DocumentKind.BANKOVERZICHT, 2024) == 2023)
+# Deze verwachting is bijgesteld nadat een echt Rabobank-jaaroverzicht liet
+# zien dat het overzicht van het aangiftejaar zowel het saldo per 1 januari als
+# per 31 december vermeldt. De eerdere regel verwachtte het overzicht van het
+# voorgaande jaar en zou elk correct aangeleverd stuk hebben afgekeurd.
+check("bankoverzicht voor aangifte 2024 hoort over 2024 te gaan",
+      expected_document_year(DocumentKind.BANKOVERZICHT, 2024) == 2024)
 check("jaaropgave loon voor aangifte 2024 hoort over 2024 te gaan",
       expected_document_year(DocumentKind.JAAROPGAVE_LOON, 2024) == 2024)
 check("AOV-premie volgt het aangiftejaar",
       expected_document_year(DocumentKind.AOV_PREMIE, 2024) == 2024)
-check("peildatum bank is 31 december van het voorgaande jaar",
-      expected_reference_date(DocumentKind.BANKOVERZICHT, 2024) == date(2023, 12, 31))
+check("het overzicht van het aangiftejaar bevat de peildatum",
+      expected_reference_date(DocumentKind.BANKOVERZICHT, 2024) == date(2024, 12, 31),
+      "welke kolom de peildatum is, bepaalt aangifte_lezer.py")
 check("een bedrag over een periode heeft geen peildatum",
       expected_reference_date(DocumentKind.JAAROPGAVE_LOON, 2024) is None)
 
@@ -47,15 +52,15 @@ print()
 print("=" * 72)
 print("De meest voorkomende verwisseling wordt gemeld")
 print("=" * 72)
-fout = check_document_period(DocumentKind.BANKOVERZICHT, 2024, 2024)
-check("bankoverzicht 2024 bij aangifte 2024 is fout", not fout.is_correct)
+fout = check_document_period(DocumentKind.BANKOVERZICHT, 2023, 2024)
+check("bankoverzicht 2024 bij aangifte 2023 is fout", not fout.is_correct)
 check("de melding noemt beide jaren",
       "2024" in fout.message and "2023" in fout.message)
 check("de melding legt uit waarom", "peildatum 1 januari" in fout.message)
 print(f"        {fout.message}")
 
-goed = check_document_period(DocumentKind.BANKOVERZICHT, 2024, 2023)
-check("bankoverzicht 2023 bij aangifte 2024 is goed", goed.is_correct)
+goed = check_document_period(DocumentKind.BANKOVERZICHT, 2024, 2024)
+check("bankoverzicht 2024 bij aangifte 2024 is goed", goed.is_correct)
 
 check("een ontbrekend jaar is geen stille goedkeuring",
       not check_document_period(DocumentKind.BANKOVERZICHT, 2024, None).is_correct)
@@ -79,7 +84,7 @@ print("=" * 72)
 uitkomsten = check_all_documents([
     (DocumentKind.JAAROPGAVE_LOON, 2024),
     (DocumentKind.AOV_PREMIE, 2024),
-    (DocumentKind.BANKOVERZICHT, 2024),   # fout jaar
+    (DocumentKind.BANKOVERZICHT, 2022),   # fout jaar
     (DocumentKind.WOZ_BESCHIKKING, 2024),
 ], aangiftejaar=2024)
 check("vier documenten, vier uitkomsten", len(uitkomsten) == 4)

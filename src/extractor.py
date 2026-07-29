@@ -104,16 +104,21 @@ class MortgageInfo(BaseModel):
         }
     )
     
-    principal_eur: float = Field(..., gt=0, description="Original loan amount")
+    # Een echte hypotheekjaaropgave vermeldt de oorspronkelijke hoofdsom, het
+    # rentepercentage en de maandtermijn vaak niet. Ze stonden hier als
+    # verplicht veld, waardoor het uitlezen van zo'n opgave volledig faalde op
+    # validatie. Wat er altijd op staat is de restschuld en de betaalde rente.
+    principal_eur: Optional[float] = Field(
+        default=None, gt=0, description="Original loan amount, if stated"
+    )
     current_balance_eur: float = Field(..., ge=0, description="Current outstanding balance")
-    interest_rate_pct: float = Field(..., ge=0, le=20, description="Annual interest rate (0-20%)")
-    monthly_payment_eur: float = Field(
-        ...,
+    interest_rate_pct: Optional[float] = Field(
+        default=None, ge=0, le=20, description="Annual interest rate, if stated"
+    )
+    monthly_payment_eur: Optional[float] = Field(
+        default=None,
         ge=0,
-        description=(
-            "Monthly payment. Zero is possible during a payment holiday or "
-            "when the loan is settled annually."
-        ),
+        description="Monthly payment, if stated. Zero during a payment holiday.",
     )
     loan_type: str = Field(default="hypotheek", description="Type of loan (hypotheek, persoonlijk, etc.)")
     annual_interest_paid_eur: Optional[float] = Field(
@@ -132,7 +137,10 @@ class MortgageInfo(BaseModel):
     def validate_balance_vs_principal(cls, v: float, info) -> float:
         """Validate current balance doesn't exceed principal (with 10% tolerance)."""
         data = info.data
-        if 'principal_eur' in data:
+        # 'is not None' en niet 'in data': het veld is optioneel geworden en
+        # staat dan als None in data, waarop de vermenigvuldiging hieronder
+        # een TypeError geeft.
+        if data.get('principal_eur') is not None:
             max_allowed = data['principal_eur'] * 1.1
             if v > max_allowed:
                 raise ValueError(

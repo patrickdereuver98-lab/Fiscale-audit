@@ -244,6 +244,7 @@ def check_omissies(
 
 def map_aangifte_labels(
     regels: Dict[str, float],
+    eindstanden: Optional[Dict[str, float]] = None,
 ) -> Tuple[Dict[str, float], List[Tuple[str, float]]]:
     """Zet labels uit het aangifterapport om naar postsleutels.
 
@@ -253,12 +254,29 @@ def map_aangifte_labels(
     Returns:
         (bedragen per postsleutel, lijst van onbekende labels met hun bedrag)
 
-        Onbekende labels worden apart teruggegeven en niet weggegooid. Een label
-        dat de tool niet kent betekent dat POSTEN moet worden aangevuld; stil
-        negeren zou een post ongemerkt buiten de controle houden, en dat is
-        precies de fout die deze tool moet vinden.
+    Een rapport noemt hetzelfde bedrag meestal meerdere keren: in de
+    samenvatting, in de specificatie en als totaal. Die tellen niet bij elkaar
+    op. Een eerdere versie deed dat wel en maakte van een AOV-premie van 7.502
+    een bedrag van 22.506, en van een eigenwoningschuld van 421.719 het
+    dubbele. Daarom wordt per post een van de gevonden regels gekozen en niet
+    gesommeerd.
+
+    De keuze volgt de volgorde van `aangifte_labels` in posten.py: de eerst
+    genoemde schrijfwijze die in het rapport voorkomt wint. Zo staat de
+    voorkeur in de postdefinitie en niet in een vuistregel hier.
+
+    Aftrekposten en schulden staan in een rapport vaak negatief, omdat ze het
+    inkomen verlagen. Dat is een presentatiekeuze, dus voor die soorten wordt
+    de absolute waarde genomen; anders levert elke aftrekpost een verschil op
+    met het positieve bedrag uit het brondocument.
+
+    Onbekende labels worden apart teruggegeven en niet weggegooid. Een label
+    dat de tool niet kent betekent dat POSTEN moet worden aangevuld; stil
+    negeren zou een post ongemerkt buiten de controle houden, en dat is precies
+    de fout die deze tool moet vinden.
     """
-    per_post: Dict[str, float] = {}
+    # Per post alle gevonden regels, met de rangorde van het label erbij.
+    kandidaten: Dict[str, List[Tuple[int, str, float]]] = {}
     onbekend: List[Tuple[str, float]] = []
 
     for label, bedrag in regels.items():
@@ -267,11 +285,53 @@ def map_aangifte_labels(
             onbekend.append((label, bedrag))
             logger.warning("Onbekend label in het aangifterapport: %r", label)
             continue
-        # Meerdere regels kunnen op dezelfde post uitkomen, bijvoorbeeld twee
-        # werkgevers. Die worden opgeteld.
-        per_post[post.key] = per_post.get(post.key, 0.0) + float(bedrag)
+
+        rang = _label_rangorde(post, label)
+        kandidaten.setdefault(post.key, []).append((rang, label, float(bedrag)))
+
+    per_post: Dict[str, float] = {}
+    for sleutel, gevonden in kandidaten.items():
+        gevonden.sort(key=lambda item: item[0])
+        _, gekozen_label, bedrag = gevonden[0]
+
+        post = POSTEN[sleutel]
+
+        # Sommige posten horen bij de eindstand en niet bij de peildatum.
+        if post.gebruik_eindstand and eindstanden:
+            eind = eindstanden.get(gekozen_label)
+            if eind is not None:
+                bedrag = eind
+
+        if post.soort in (PostSoort.AFTREK, PostSoort.SCHULD):
+            bedrag = abs(bedrag)
+
+        per_post[sleutel] = bedrag
+
+        if len(gevonden) > 1:
+            afwijkend = {round(abs(b), 2) for _, _, b in gevonden}
+            if len(afwijkend) > 1:
+                logger.info(
+                    "Post %s komt in het rapport voor met verschillende bedragen "
+                    "%s; %r is gebruikt",
+                    sleutel, sorted(afwijkend), gekozen_label,
+                )
 
     return per_post, onbekend
+
+
+def _label_rangorde(post: Post, label: str) -> int:
+    """Waar dit label staat in de voorkeurslijst van de post.
+
+    Een lager getal is een sterkere voorkeur. Labels die niet letterlijk in de
+    lijst staan maar via normalisatie zijn gekoppeld, komen achteraan.
+    """
+    from .posten import normaliseer_label
+
+    genormaliseerd = normaliseer_label(label)
+    for index, kandidaat in enumerate(post.aangifte_labels):
+        if normaliseer_label(kandidaat) == genormaliseerd:
+            return index
+    return len(post.aangifte_labels)
 
 
 def check_omissies_op_labels(

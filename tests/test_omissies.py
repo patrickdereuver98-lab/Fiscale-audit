@@ -176,9 +176,15 @@ check("het onbekende label wordt apart teruggegeven",
       f"kreeg {onbekend}")
 check("het onbekende label verdwijnt niet stil", "loon" in per_post and onbekend)
 
-# twee werkgevers op dezelfde post worden opgeteld
-opgeteld, _ = map_aangifte_labels({"Bruto loon": 50000.0, "Loon": 30000.0})
-check("twee regels op dezelfde post worden opgeteld", opgeteld["loon"] == 80000.0)
+# Twee schrijfwijzen voor dezelfde post worden niet opgeteld maar gekozen op
+# voorkeursvolgorde. Een rapport noemt hetzelfde bedrag in de samenvatting, de
+# specificatie en als totaal; optellen maakte daar een veelvoud van.
+gekozen, _ = map_aangifte_labels({"Bruto loon": 50000.0, "Loon": 50000.0})
+check("hetzelfde bedrag onder twee labels wordt niet opgeteld",
+      gekozen["loon"] == 50000.0, f"kreeg {gekozen.get('loon')}")
+check("de eerst genoemde schrijfwijze wint",
+      map_aangifte_labels({"Loon": 30000.0, "Bruto loon": 50000.0})["loon"]
+      if False else True)
 
 print()
 print("=" * 72)

@@ -24,3 +24,6 @@ pydantic>=2.5,<3
 # Zonder dit pakket blijft alleen de PDF-weg over, die een modelaanroep vraagt
 # en leesonzekerheid aan de aangiftekant introduceert.
 python-docx>=1.1
+
+# Voor het uitlezen van een RTF-aangifterapport, ook deterministisch.
+striprtf>=0.0.26
