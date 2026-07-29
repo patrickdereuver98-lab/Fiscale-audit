@@ -35,6 +35,7 @@ try:
     from src.matcher import AuditMatcher, MatchResult, AuditSummary
     from src.omissions import check_omissies, OmissieRapport
     from src.peildatum import check_document_period, PERIOD_RULES
+    from src.controles import controleer_uitlezing, ControleRapport
     from src.triggers import TRIGGER_DEFINITIES, TriggerKind, Trigger, TriggerReport
     from src.advisor import FiscalAdvisor, build_document_request_email
     from src.layout import stel_pagina_in, sectie
@@ -42,6 +43,7 @@ try:
         dossierband, bevinding_kaart, alles_akkoord, documentregel,
         info_box, divider, uitkomstband, copyable_text_area,
         format_currency, format_count, format_percentage, risk_level_indicator,
+        zij_kop, zij_dossier, zij_regel, zij_noot,
     )
 except ImportError as exc:
     st.error(f"Modules konden niet worden geladen: {exc}")
@@ -75,6 +77,7 @@ def init_session_state() -> None:
         "match_samenvatting": None,
         "omissie_rapport": None,
         "periode_meldingen": [],
+        "controle_rapport": None,
         "triggers": None,
         "analyse": None,
         "signoff": {},               # bevindingsleutel -> dict
@@ -532,13 +535,25 @@ def _voer_controle_uit() -> None:
                 reported_amounts=aangifte_posten,
             )
             omissies = check_omissies(gecombineerd, aangifte_posten)
+            # Eerst nagaan of de stukken goed zijn gelezen. Sluit een telling
+            # niet, dan valt er over de aangifte niets te concluderen.
+            controles = controleer_uitlezing(gecombineerd)
 
         st.session_state["match_resultaten"] = resultaten
         st.session_state["match_samenvatting"] = samenvatting
         st.session_state["omissie_rapport"] = omissies
+        st.session_state["controle_rapport"] = controles
         st.session_state["periode_meldingen"] = _controleer_periodes()
         st.session_state["analyse"] = None
         st.session_state["gecontroleerd_op"] = datetime.now().strftime("%d-%m %H:%M")
+
+        if not controles.uitlezing_is_bewezen:
+            info_box(
+                "Let op: een telling in de stukken sluit niet. Er is een bedrag "
+                "verkeerd gelezen of er mist een regel. Zoek dat eerst uit; de "
+                "uitkomst hieronder is tot die tijd niet betrouwbaar.",
+                "error",
+            )
 
         aandacht = (
             samenvatting.needs_attention_count
@@ -994,52 +1009,108 @@ def _gemaskeerde_data() -> Optional[Dict[str, Any]]:
 # ============================================================================
 
 def render_sidebar() -> None:
-    """Dossier, reviewer en koppelingen."""
+    """Zijbalk: dossier, voortgang en koppelingen.
+
+    Opgebouwd als een dossieromslag: een blok per onderwerp met een label dat
+    niet schreeuwt, en statusregels op een raster zodat je ze in een kolom kunt
+    aflopen.
+    """
     with st.sidebar:
-        st.markdown("### Dossier")
-        st.session_state["klant_naam"] = st.text_input(
-            "Klant",
-            value=st.session_state["klant_naam"],
-            placeholder="Jansen Holding BV",
-        )
-        st.session_state["aangiftejaar"] = st.number_input(
-            "Aangiftejaar",
-            value=int(st.session_state["aangiftejaar"]),
-            min_value=2015,
-            max_value=datetime.now().year,
-            step=1,
-        )
-        st.session_state["reviewer"] = st.text_input(
-            "Jouw initialen",
-            value=st.session_state["reviewer"],
-            placeholder="PdR",
-            help="Wordt vastgelegd bij elk punt dat je aftekent",
+        naam = st.session_state["klant_naam"]
+        jaar = int(st.session_state["aangiftejaar"])
+        zij_dossier(
+            naam or "Nog geen dossier",
+            f"aangiftejaar {jaar}" + (
+                f" · {st.session_state['reviewer']}"
+                if st.session_state["reviewer"] else ""
+            ),
         )
 
-        divider(12)
-        st.markdown("### Invoer")
-        for tekst, gereed in [
-            (f"{len(st.session_state['brondocumenten'])} stukken gelezen",
-             bool(st.session_state["brondocumenten"])),
-            (f"{len(st.session_state['aangifte_posten'])} posten uit het rapport",
-             bool(st.session_state["aangifte_posten"])),
-            ("Controle uitgevoerd", st.session_state["match_resultaten"] is not None),
-        ]:
-            st.markdown(f"{'✓' if gereed else '·'} {tekst}")
-
-        divider(12)
-        st.markdown("### Koppelingen")
-        for naam, aanwezig, verplicht in [
-            ("Gemini", bool(gemini_key()), True),
-            ("Claude", bool(claude_key()), False),
-        ]:
-            teken = "🟢" if aanwezig else ("🔴" if verplicht else "⚪")
-            achtervoegsel = "" if aanwezig else (
-                " (verplicht)" if verplicht else " (optioneel)"
+        with st.expander("Dossiergegevens", expanded=not naam):
+            st.session_state["klant_naam"] = st.text_input(
+                "Klant", value=naam, placeholder="Voorbeeld Holding BV",
             )
-            st.markdown(f"{teken} {naam}{achtervoegsel}")
+            st.session_state["aangiftejaar"] = st.number_input(
+                "Aangiftejaar", value=jaar,
+                min_value=2015, max_value=datetime.now().year, step=1,
+            )
+            st.session_state["reviewer"] = st.text_input(
+                "Jouw initialen",
+                value=st.session_state["reviewer"],
+                placeholder="AB",
+                help="Wordt vastgelegd bij elk punt dat je aftekent",
+            )
 
-        st.caption("Beheer de fiscale kernwaarden in de Data Monitor.")
+        # ---------- voortgang ----------
+        zij_kop("Voortgang")
+
+        stukken = len(st.session_state["brondocumenten"])
+        posten = len(st.session_state["aangifte_posten"])
+        gecontroleerd = st.session_state["match_resultaten"] is not None
+
+        zij_regel("Stukken gelezen", "klaar" if stukken else "open",
+                  str(stukken) if stukken else "")
+        zij_regel("Posten uit rapport", "klaar" if posten else "open",
+                  str(posten) if posten else "")
+        zij_regel("Controle uitgevoerd", "klaar" if gecontroleerd else "open")
+
+        if gecontroleerd:
+            bevindingen = _alle_bevindingen()
+            open_punten = sum(
+                1 for b in bevindingen if not _is_afgehandeld(b["sleutel"])
+            )
+            zij_regel(
+                "Open punten",
+                "klaar" if open_punten == 0 else "ontbreekt",
+                str(open_punten),
+            )
+
+        # ---------- uitlezing ----------
+        controles = st.session_state.get("controle_rapport")
+        if controles is not None:
+            zij_kop("Uitlezing")
+            if controles.uitlezing_is_bewezen:
+                zij_regel(
+                    "Tellingen sluiten", "klaar", str(controles.aantal_bewezen)
+                )
+                zij_noot(
+                    "De losse bedragen tellen op tot de totalen die de "
+                    "documenten zelf noemen. Daarmee staat vast dat ze goed "
+                    "zijn gelezen."
+                )
+            else:
+                zij_regel("Telling sluit niet", "ontbreekt",
+                          str(len(controles.gefaald)))
+                zij_noot(
+                    "Er is een bedrag verkeerd gelezen of er mist een regel. "
+                    "Zoek dit eerst uit; de aansluiting is tot die tijd niet "
+                    "betrouwbaar."
+                )
+
+        # ---------- koppelingen ----------
+        zij_kop("Koppelingen")
+        zij_regel(
+            "Gemini · documenten",
+            "klaar" if gemini_key() else "ontbreekt",
+        )
+        zij_regel(
+            "Claude · weging",
+            "klaar" if claude_key() else "optioneel",
+        )
+
+        if not gemini_key():
+            zij_noot(
+                "Zonder Gemini-sleutel kunnen de stukken niet worden gelezen. "
+                "Het aangifterapport wel: Word en RTF gaan zonder model."
+            )
+        elif not claude_key():
+            zij_noot(
+                "Zonder Claude-sleutel werkt de controle volledig; alleen de "
+                "fiscale toelichting per bevinding ontbreekt."
+            )
+
+        zij_kop("Beheer")
+        zij_noot("De fiscale kernwaarden staan in de Data Monitor.")
 
 
 # ============================================================================

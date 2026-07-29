@@ -11,6 +11,8 @@ Laagindeling, van binnen naar buiten:
     posten.py        aangifteposten, gemapt op de labels uit het rapport
     aangifte_lezer   het aangifterapport uitlezen (docx zonder model)
     fiscale_kern.py  tarieven en drempels per jaar, met verificatiestatus
+    controles.py     controles op de uitlezing zelf (cross-foot)
+    kern_nakijker.py kernwaarden opzoeken bij de bron (Gemini)
     omissions.py     wat in de bron staat en niet in de aangifte
     llm_json.py      JSON uit een modelantwoord halen
     anonymizer.py    persoonsgegevens maskeren voor externe aanroepen
@@ -49,6 +51,10 @@ from .peildatum import (
     PeriodCheck, check_document_period, check_all_documents,
     expected_document_year, expected_reference_date,
 )
+from .controles import (
+    Controle, ControleRapport, ControleSoort,
+    crossfoot, controleer_uitlezing, vergelijk_lezingen, platte_bedragen,
+)
 from .triggers import (
     TriggerKind, Trigger, TriggerReport, TRIGGER_DEFINITIES, missing_documents,
 )
@@ -64,6 +70,7 @@ _LAZY = {
     "DataAnonymizer": "anonymizer",
     "DocumentExtractor": "extractor",
     "ExtractedFinancialData": "extractor",
+    "maak_gemini_nakijker": "kern_nakijker",
     "stel_pagina_in": "layout",
     "pas_opmaak_toe": "layout",
     "sectie": "layout",
@@ -117,6 +124,9 @@ __all__ = [
     "expected_document_year", "expected_reference_date",
     "TriggerKind", "Trigger", "TriggerReport", "TRIGGER_DEFINITIES",
     "missing_documents",
+    "Controle", "ControleRapport", "ControleSoort",
+    "crossfoot", "controleer_uitlezing", "vergelijk_lezingen",
+    "platte_bedragen",
     "POSTEN", "Post", "PostSoort", "post_voor_label", "normaliseer_label",
     "Kernwaarde", "Kernwaarden", "Voorstel", "KernwaardeOntbreekt",
     "laad_kernwaarden", "lege_kernwaarden", "bewaar_in_json",

@@ -575,3 +575,55 @@ def uitkomstband(blokken: List[Dict[str, Any]]) -> None:
         f'<div class="uitkomst">{"".join(inhoud)}</div>',
         unsafe_allow_html=True,
     )
+
+
+# ============================================================================
+# ZIJBALK
+# ============================================================================
+
+def zij_kop(titel: str) -> None:
+    """Kop van een blok in de zijbalk."""
+    st.markdown(f'<div class="zij-kop">{titel}</div>', unsafe_allow_html=True)
+
+
+def zij_dossier(naam: str, meta: str) -> None:
+    """Dossierkaart bovenaan de zijbalk."""
+    st.markdown(
+        f'<div class="zij-dossier"><div class="zij-dossier-naam">{naam}</div>'
+        f'<div class="zij-dossier-meta">{meta}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def zij_regel(
+    tekst: str,
+    status: str = "open",
+    waarde: str = "",
+) -> None:
+    """Statusregel in de zijbalk.
+
+    Args:
+        tekst: Wat er wordt gemeld.
+        status: "klaar", "open", "ontbreekt" of "optioneel"; bepaalt teken
+            en kleur.
+        waarde: Optioneel getal of aanduiding rechts uitgelijnd.
+    """
+    tekens = {
+        "klaar": "✓",
+        "open": "·",
+        "ontbreekt": "✕",
+        "optioneel": "·",
+    }
+    st.markdown(
+        f'<div class="zij-regel">'
+        f'<span class="zij-teken {status}">{tekens.get(status, "·")}</span>'
+        f"<span>{tekst}</span>"
+        f'<span class="zij-waarde">{waarde}</span>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def zij_noot(tekst: str) -> None:
+    """Kleine toelichting in de zijbalk."""
+    st.markdown(f'<p class="zij-noot">{tekst}</p>', unsafe_allow_html=True)

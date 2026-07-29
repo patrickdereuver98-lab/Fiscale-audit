@@ -27,6 +27,7 @@ from src.fiscale_kern import (
     laad_kernwaarden, bewaar_in_json, lege_kernwaarden,
     maak_voorstellen, pas_voorstellen_toe, KERN_BESTAND,
 )
+from src.kern_nakijker import maak_gemini_nakijker
 from src.triggers import TRIGGER_DEFINITIES, TriggerKind
 from src.posten import POSTEN, PostSoort
 from src.peildatum import PERIOD_RULES
@@ -148,13 +149,18 @@ def render_kernwaarden() -> None:
         return
 
     info_box(
-        "De nakijkfunctie is nog niet aangesloten. De structuur, de "
-        "goedkeuringsstap en het opslaan werken; wat ontbreekt is de aanroep die "
-        "een waarde bij de bron opzoekt. Die is bewust apart gehouden zodat de "
-        "bron uitwisselbaar is, en wordt aangesloten zodra vaststaat welke "
-        "bronnen je wilt gebruiken.",
-        "info",
+        "De aanroep is niet tegen de echte API getest; in de omgeving waarin deze "
+        "code is geschreven was die niet bereikbaar. Loop het eerste voorstel per "
+        "waarde extra na, en let vooral op of de bron werkelijk het jaar betreft "
+        "dat je hebt opgevraagd.",
+        "warning",
     )
+
+    if st.button("Waarden nakijken", type="primary"):
+        _kijk_waarden_na(kern)
+
+    if st.session_state.get("kern_voorstellen"):
+        _toon_voorstellen(kern)
 
     with st.expander("Handmatig invullen"):
         st.caption(
@@ -224,6 +230,125 @@ def render_kernwaarden() -> None:
             "Commit dit bestand naar GitHub, anders verdwijnen de wijzigingen "
             "bij een herstart van de cloudomgeving."
         )
+
+
+def _kijk_waarden_na(kern) -> None:
+    """Laat elke waarde nakijken en bewaar de voorstellen.
+
+    Er wordt niets doorgevoerd. De voorstellen komen in de sessie en worden per
+    stuk goedgekeurd.
+    """
+    sleutel = get_secret("google_api_key", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+    if not sleutel:
+        info_box("Geen Gemini-sleutel ingesteld.", "error")
+        return
+
+    balk = st.progress(0.0, text="Bezig met nakijken")
+    totaal = max(1, len(kern.waarden))
+    voortgang = {"aantal": 0}
+
+    def melden(bericht: str) -> None:
+        voortgang["aantal"] += 1
+        balk.progress(min(1.0, voortgang["aantal"] / totaal), text=bericht)
+
+    try:
+        nakijker = maak_gemini_nakijker(sleutel)
+        voorstellen = maak_voorstellen(kern, nakijker, voortgang=melden)
+        st.session_state["kern_voorstellen"] = voorstellen
+    except Exception as exc:
+        info_box(f"Nakijken mislukt: {exc}", "error")
+        return
+    finally:
+        balk.empty()
+
+    afwijkend = [v for v in voorstellen if v.is_afwijkend]
+    mislukt = [v for v in voorstellen if v.is_mislukt]
+    info_box(
+        f"{len(voorstellen)} waarden nagekeken. {len(afwijkend)} voorstel(len) "
+        f"tot wijziging, {len(mislukt)} mislukt. Er is niets doorgevoerd.",
+        "success" if afwijkend else "info",
+    )
+
+
+def _toon_voorstellen(kern) -> None:
+    """Voorstellen tonen en per stuk laten goedkeuren."""
+    voorstellen = st.session_state["kern_voorstellen"]
+    afwijkend = [v for v in voorstellen if v.is_afwijkend]
+
+    st.markdown("#### Voorstellen")
+
+    if not afwijkend:
+        info_box(
+            "Geen enkel voorstel wijkt af van wat er nu staat, of er kwam voor "
+            "geen enkele waarde een onderbouwd getal terug.",
+            "info",
+        )
+    else:
+        naam = st.text_input(
+            "Jouw naam",
+            key="kern_verifieerder",
+            help="Wordt vastgelegd bij elke waarde die je goedkeurt",
+        )
+
+        goedgekeurd = []
+        for voorstel in afwijkend:
+            with st.container(border=True):
+                st.markdown(f"**{voorstel.naam}**  ·  `{voorstel.sleutel}`")
+                kolom1, kolom2 = st.columns(2)
+                with kolom1:
+                    st.caption("Nu")
+                    st.write(voorstel.huidige_waarde
+                             if voorstel.huidige_waarde is not None else "—")
+                with kolom2:
+                    st.caption("Voorstel")
+                    st.write(voorstel.nieuwe_waarde)
+
+                if voorstel.toelichting:
+                    st.caption(voorstel.toelichting)
+
+                if voorstel.heeft_bron:
+                    st.caption(
+                        f"Bron: {voorstel.bron_naam or 'zonder naam'} · "
+                        f"{voorstel.bron_url}"
+                    )
+                    if st.checkbox(
+                        "Nagekeken en akkoord",
+                        key=f"ok_{voorstel.sleutel}",
+                    ):
+                        goedgekeurd.append(voorstel.sleutel)
+                else:
+                    info_box(
+                        "Zonder verwijzing naar een bron kan dit niet worden "
+                        "goedgekeurd: er is dan niets om tegen na te kijken.",
+                        "warning",
+                    )
+
+        if goedgekeurd and st.button(
+            f"{len(goedgekeurd)} waarde(n) doorvoeren", type="primary"
+        ):
+            try:
+                bijgewerkt = pas_voorstellen_toe(
+                    kern, voorstellen, goedgekeurd, geverifieerd_door=naam
+                )
+                if bewaar_in_json(kern):
+                    info_box(
+                        f"{len(bijgewerkt)} waarde(n) opgeslagen. Vergeet niet "
+                        f"data/fiscale_kern.json naar GitHub te committen, "
+                        f"anders verdwijnen ze bij een herstart.",
+                        "success",
+                    )
+                    st.session_state["kern_voorstellen"] = None
+                    st.rerun()
+                else:
+                    info_box("Opslaan mislukt.", "error")
+            except ValueError as exc:
+                info_box(str(exc), "error")
+
+    mislukt = [v for v in voorstellen if v.is_mislukt]
+    if mislukt:
+        with st.expander(f"{len(mislukt)} waarden konden niet worden nagekeken"):
+            for voorstel in mislukt:
+                st.markdown(f"- **{voorstel.naam}**: {voorstel.fout}")
 
 
 # ============================================================================

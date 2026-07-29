@@ -216,9 +216,70 @@ check("bedragen staan in Nederlandse notatie",
       any("57.684,00" in r["Waarde"] for r in overzicht),
       f"kreeg {[r['Waarde'] for r in overzicht]}")
 
+
 print()
 print("=" * 72)
-print(f"RESULTAAT: {len(geslaagd)} geslaagd, {len(gefaald)} gefaald")
+print("Verwerking van een voorstel uit het model")
+print("=" * 72)
+from src.kern_nakijker import _normaliseer
+
+kern_bedrag = Kernwaarde(sleutel="test_bedrag", naam="Test", belastingjaar=2024,
+                         eenheid="EUR", toelichting="test")
+kern_tabel = Kernwaarde(sleutel="test_tabel", naam="Test", belastingjaar=2024,
+                        eenheid="tabel", toelichting="test")
+
+goed = _normaliseer({
+    "waarde": 57684.0, "bron_naam": "Belastingdienst",
+    "bron_url": "https://example.invalid/x", "zekerheid": "hoog",
+}, kern_bedrag, kon_zoeken=True)
+check("een onderbouwd voorstel komt door", goed["waarde"] == 57684.0)
+
+zonder_bron = _normaliseer({
+    "waarde": 57684.0, "bron_url": "", "zekerheid": "hoog",
+}, kern_bedrag, kon_zoeken=True)
+check("zonder bron wordt de waarde leeg gelaten", zonder_bron["waarde"] is None,
+      "een getal zonder verwijzing rust alleen op het model")
+check("de reden staat erbij", "geen bron" in zonder_bron["toelichting"])
+
+lage_zekerheid = _normaliseer({
+    "waarde": 57684.0, "bron_url": "https://example.invalid/x",
+    "zekerheid": "laag",
+}, kern_bedrag, kon_zoeken=True)
+check("bij lage zekerheid geen waarde", lage_zekerheid["waarde"] is None,
+      "het model twijfelt of het getal voor het gevraagde jaar geldt")
+
+zonder_zoeken = _normaliseer({
+    "waarde": 57684.0, "bron_url": "https://example.invalid/x",
+    "zekerheid": "hoog",
+}, kern_bedrag, kon_zoeken=False)
+check("zonder zoekfunctie wordt niets overgenomen",
+      zonder_zoeken["waarde"] is None,
+      "dan komt het getal uit het geheugen van het model")
+check("dat staat in de toelichting",
+      "geheugen van het model" in zonder_zoeken["toelichting"])
+
+verkeerde_vorm = _normaliseer({
+    "waarde": [1, 2, 3], "bron_url": "https://example.invalid/x",
+    "zekerheid": "hoog",
+}, kern_bedrag, kon_zoeken=True)
+check("een tabel voor een enkel bedrag wordt geweigerd",
+      verkeerde_vorm["waarde"] is None)
+
+tabel_gevraagd = _normaliseer({
+    "waarde": 5.0, "bron_url": "https://example.invalid/x", "zekerheid": "hoog",
+}, kern_tabel, kon_zoeken=True)
+check("een enkel getal voor een tabel wordt geweigerd",
+      tabel_gevraagd["waarde"] is None)
+
+tabel_goed = _normaliseer({
+    "waarde": [{"tot": 1000, "pct": 0.1}], "bron_url": "https://example.invalid/x",
+    "zekerheid": "hoog",
+}, kern_tabel, kon_zoeken=True)
+check("een echte tabel komt door", tabel_goed["waarde"] is not None)
+
+print()
+print("=" * 72)
+print(f"EINDRESULTAAT: {len(geslaagd)} geslaagd, {len(gefaald)} gefaald")
 for f in gefaald:
     print("  gefaald:", f)
 print("=" * 72)

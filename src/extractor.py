@@ -356,6 +356,22 @@ class ExtractedFinancialData(BaseModel):
         default_factory=list,
         description="Lijfrente premiums paid and benefits received"
     )
+    # Totalen die het document zelf noemt, bijvoorbeeld "De hoogte van uw lening
+    # EUR 421.719". Die maken een cross-foot mogelijk: tellen de losse posten op
+    # tot het totaal dat er staat, dan is elk onderdeel goed gelezen. Dat geeft
+    # zekerheid en niet een waarschijnlijkheid, en is daarmee een sterkere
+    # controle dan een tweede model dat hetzelfde document opnieuw leest.
+    stated_totals: dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "Totals the document states itself, keyed by what they total. "
+            "Use these keys when present: mortgage_debt_total, "
+            "mortgage_interest_total, bank_balance_total_peildatum, "
+            "bank_balance_total_yearend, employment_income_total. "
+            "Report the figure exactly as printed; do not compute it yourself, "
+            "because the point of these values is to check your own reading."
+        ),
+    )
     kia_profit_eur: Optional[float] = Field(
         default=None,
         ge=0,
@@ -548,6 +564,7 @@ Your response must be valid JSON with this exact structure:
         }
     ],
     "annuities": [],
+    "stated_totals": {"mortgage_debt_total": 421719.0, "mortgage_interest_total": 13491.0},
     "business_income": null,
     "real_estate": [
         {
@@ -592,6 +609,11 @@ FIELD NOTES:
 - year: the year the document covers, on every item that has the field. This
   is used to check the document belongs to the tax year being reviewed, so
   never guess it; use null when the document does not state it.
+- stated_totals: any total the document prints itself. A mortgage statement
+  prints the total loan and often the total interest; a bank overview prints a
+  total per section. Copy these exactly as printed. Never calculate them: they
+  are used to check whether the individual figures were read correctly, so a
+  computed total proves nothing.
 - document_type: one of WOZ_beschikking, bankjaaropgave, hypotheek_jaaropgave,
   jaaropgave_loon, jaaropgave_uitkering, aov_premie, lijfrente,
   nota_van_afrekening, jaarrekening, aangifterapport, overig.

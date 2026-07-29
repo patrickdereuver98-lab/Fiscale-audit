@@ -1044,3 +1044,115 @@ table td,
     .uitkomst-blok { min-width: 44%; }
     .sectie-kop { gap: var(--space-sm); }
 }
+
+/* ============================================================================
+   ZIJBALK
+   ============================================================================
+   De zijbalk was een stapel losse regels met emoji's ervoor. Hier krijgt hij de
+   opbouw van een dossieromslag: een blok per onderwerp, een kop die niet
+   schreeuwt, en statusregels die op een raster staan zodat het oog ze in een
+   kolom kan aflopen.
+   ============================================================================ */
+
+[data-testid="stSidebar"] {
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--border);
+}
+
+[data-testid="stSidebar"] > div:first-child {
+    padding-top: var(--space-md);
+}
+
+/* Kop van een zijbalkblok: klein, gespatieerd, in de zachtste tekstkleur.
+   Het is een label en geen titel. */
+.zij-kop {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin: var(--space-lg) 0 var(--space-sm);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+
+.zij-kop::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+}
+
+.zij-kop:first-of-type {
+    margin-top: 0;
+}
+
+/* Statusregels op een raster: teken links, tekst rechts, alles uitgelijnd. */
+.zij-regel {
+    display: grid;
+    grid-template-columns: 14px 1fr auto;
+    align-items: baseline;
+    gap: var(--space-sm);
+    padding: 5px 0;
+    font-size: 0.84rem;
+    color: var(--text-secondary);
+}
+
+.zij-teken {
+    font-size: 0.8rem;
+    line-height: 1.5;
+    text-align: center;
+}
+
+.zij-teken.klaar     { color: var(--success); }
+.zij-teken.open      { color: var(--text-tertiary); }
+.zij-teken.ontbreekt { color: var(--error); }
+.zij-teken.optioneel { color: var(--border-light); }
+
+.zij-waarde {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.8rem;
+    color: var(--text-tertiary);
+}
+
+.zij-noot {
+    margin: var(--space-xs) 0 0;
+    font-size: 0.74rem;
+    line-height: 1.45;
+    color: var(--text-tertiary);
+}
+
+/* Dossierkaart bovenaan: waar je bent, in één blok. */
+.zij-dossier {
+    padding: var(--space-md);
+    background: var(--dark-bg-alt);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    margin-bottom: var(--space-sm);
+}
+
+.zij-dossier-naam {
+    font-size: 0.95rem;
+    font-weight: 650;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+
+.zij-dossier-meta {
+    margin-top: 2px;
+    font-size: 0.78rem;
+    color: var(--text-tertiary);
+}
+
+/* Invoervelden in de zijbalk compacter dan in de hoofdpagina. */
+[data-testid="stSidebar"] input {
+    font-size: 0.86rem;
+    padding: 7px 10px;
+}
+
+[data-testid="stSidebar"] label {
+    font-size: 0.78rem !important;
+    color: var(--text-tertiary) !important;
+}

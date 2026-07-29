@@ -28,10 +28,14 @@ from typing import Dict
 class Kleuren:
     """Het palet. Deze hexen zijn opgegeven en staan vast."""
 
-    # achtergronden, van diep naar licht
-    achtergrond: str = "#0F172A"
-    vlak: str = "#1E293B"
-    vlak_hover: str = "#334155"
+    # Achtergronden, van diep naar licht. Opgetrokken uit het oorspronkelijke
+    # #0F172A: dat is bijna zwart en maakt een dashboard waar je een dag naar
+    # kijkt zwaar. Deze tinten houden dezelfde blauwgrijze richting maar geven
+    # meer lucht, en het contrast met de tekst blijft ruim boven de norm.
+    achtergrond: str = "#182238"
+    vlak: str = "#212D46"
+    vlak_hover: str = "#2C3A57"
+    zijbalk: str = "#141D30"     # iets donkerder dan de pagina, geeft diepte
 
     # primaire actie
     primair: str = "#2563EB"
@@ -54,12 +58,12 @@ class Kleuren:
     tekst_zachtst: str = "#94A3B8"
 
     # lijnen
-    rand: str = "#1E293B"
-    rand_licht: str = "#334155"
+    rand: str = "#2A3752"
+    rand_licht: str = "#3A4A6B"
 
     # verloop, alleen als tweede stop in een gradient
-    achtergrond_verloop: str = "#1A2847"
-    vlak_verloop: str = "#2D3748"
+    achtergrond_verloop: str = "#1D2942"
+    vlak_verloop: str = "#28344E"
 
     # status "geen bewijs": paars, want het is geen fout maar een onbekende.
     # Rood zou suggereren dat er iets mis is met de aangifte terwijl er alleen
@@ -144,6 +148,7 @@ def css_variabelen() -> str:
         f"    --dark-bg: {KLEUR.achtergrond};",
         f"    --dark-bg-alt: {KLEUR.vlak};",
         f"    --dark-bg-hover: {KLEUR.vlak_hover};",
+        f"    --sidebar-bg: {KLEUR.zijbalk};",
         f"    --primary: {KLEUR.primair};",
         f"    --primary-hover: {KLEUR.primair_hover};",
         f"    --primary-light: {KLEUR.primair_licht};",
